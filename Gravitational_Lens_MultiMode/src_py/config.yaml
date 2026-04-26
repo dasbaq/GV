@@ -1,0 +1,27 @@
+physics:
+  c_light: 1.0
+  g_constant: 1.0
+  epsilon: 1e-6
+
+simulation:
+  step_size: 0.05
+  max_steps: 5000
+  grid_resolution: 100
+  source_z: -50.0
+
+lens_model:
+  main_mass: 1e12
+  sub_mass_dm: 1e8
+  sub_mass_smbh: 1e9
+  sub_pos: [2.0, 1.5, -1.0]
+
+# ✅ 새롭게 추가된 우주론 파라미터 (Mode 1 정답지)
+cosmology:
+  true_H0: 70.0
+  z_lens: 0.5
+  z_source: 2.0
+  omega_m: 0.3
+  omega_lambda: 0.7
+
+paths:
+  output_dir: "../data/outputs/"
