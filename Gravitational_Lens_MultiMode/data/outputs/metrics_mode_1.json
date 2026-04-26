@@ -1,0 +1,31 @@
+{
+  "mode": 1,
+  "mode_name": "Cosmology (H0 역산)",
+  "algorithm": "gradient_boosting",
+  "n_samples": 10000,
+  "n_features": 10,
+  "feature_names": [
+    "init_x",
+    "init_y",
+    "final_x",
+    "final_y",
+    "deflection_x",
+    "deflection_y",
+    "deflection_mag",
+    "final_r",
+    "final_theta",
+    "init_r"
+  ],
+  "target_names": [
+    "time_delay"
+  ],
+  "metrics": {
+    "mse": 261.32189219564964,
+    "mae": 9.804320160805924,
+    "r2": 0.9526930051929626,
+    "mape": 4.589836227572122,
+    "cv_r2_mean": 0.954251579527343,
+    "cv_r2_std": 0.0024759519324766264
+  },
+  "timestamp": "2026-04-26T22:14:16.198808"
+}

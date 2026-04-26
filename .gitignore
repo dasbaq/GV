@@ -1,0 +1,19 @@
+*.joblib
+# Mac system files
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# C/C++ compiled files
+*.o
+Gravitational_Lens_MultiMode/src_c/bin/raytrace_engine
+Gravitational_Lens_MultiMode/test_omp
+
+# Large Models & Data Outputs
+*.joblib
+*.pth
+Gravitational_Lens_MultiMode/data/outputs/	
+

@@ -1,0 +1,40 @@
+{
+  "mode": 3,
+  "mode_name": "SMBH (소스 위치 복원 - Point Mass)",
+  "algorithm": "ensemble",
+  "n_samples": 10000,
+  "n_features": 18,
+  "feature_names": [
+    "final_x",
+    "final_y",
+    "time_delay",
+    "radial_r",
+    "polar_theta",
+    "r_inv",
+    "r_inv_sq",
+    "log_delay",
+    "delay_over_r",
+    "x_times_delay",
+    "y_times_delay",
+    "log_r",
+    "x_squared",
+    "y_squared",
+    "xy_cross",
+    "delay_squared",
+    "r_times_delay",
+    "einstein_approx"
+  ],
+  "target_names": [
+    "init_x",
+    "init_y"
+  ],
+  "metrics": {
+    "mse": 0.32296997857562926,
+    "mae": 0.48374668435084367,
+    "r2": 0.04818403134517957,
+    "mape": 135.72459042124427,
+    "cv_r2_mean": 0.04385328576493389,
+    "cv_r2_std": 0.008854693547088885
+  },
+  "timestamp": "2026-04-26T22:27:56.429361"
+}

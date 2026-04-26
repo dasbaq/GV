@@ -36,9 +36,14 @@ def main():
     simulator.load_data(df)
     X, Y = simulator.preprocess_features()
     
-    # 3. ML Pipeline
-    regressor = TargetAgnosticRegressor()
-    regressor.train_and_evaluate(X, Y)
+    # 3. ML Pipeline — 모드별 최적 알고리즘 자동 선택
+    algo = 'gradient_boosting' if args.mode == 1 else 'random_forest'
+    regressor = TargetAgnosticRegressor(algorithm=algo)
+    pipeline, metrics = regressor.train_and_evaluate(X, Y)
+    
+    # 4. 학습된 모델 저장
+    model_save_path = f"../data/outputs/model_mode_{args.mode}_main.joblib"
+    regressor.save_model(model_save_path)
 
 if __name__ == "__main__":
     main()

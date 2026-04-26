@@ -1,6 +1,7 @@
 from core.base_sim import BaseSimulator
 import pandas as pd
 import numpy as np
+import scipy.signal
 from core.lightcurve import LightCurveSimulator
 
 class CosmologyMode(BaseSimulator):
@@ -39,8 +40,8 @@ class CosmologyMode(BaseSimulator):
             n = len(joint_flux)
             var = np.var(joint_flux)
             flux_norm = joint_flux - np.mean(joint_flux)
-            # numpy를 이용한 빠른 교차상관 계산
-            acf = np.correlate(flux_norm, flux_norm, mode='full')[n-1:] / (var * n)
+            # numpy를 이용한 빠른 교차상관 계산 -> FFT 기반 O(N log N) 초고속 연산으로 교체
+            acf = scipy.signal.correlate(flux_norm, flux_norm, mode='full', method='fft')[n-1:] / (var * n)
             
             # 처음 100개(약 300일 치)의 시차(Lag) 데이터만 피처로 사용
             X_features.append(acf[:100])

@@ -26,6 +26,7 @@ python3 main.py --mode $MODE
 cd ..
 
 echo "--- Pipeline Execution Completed! ---"
-# ... 기존 C 실행 코드 아래에 추가 ...
-echo "Running ML Correction Pipeline..."
+echo "--- Step 4: Running ML Training Pipeline ---"
 python3 src_py/ml/ml_pipeline.py $MODE
+
+echo "--- All Pipeline Steps Completed! ---"

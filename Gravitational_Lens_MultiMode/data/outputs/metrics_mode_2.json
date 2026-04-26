@@ -1,0 +1,40 @@
+{
+  "mode": 2,
+  "mode_name": "Dark Matter (소스 위치 복원 - NFW)",
+  "algorithm": "ensemble",
+  "n_samples": 10000,
+  "n_features": 18,
+  "feature_names": [
+    "final_x",
+    "final_y",
+    "time_delay",
+    "radial_r",
+    "polar_theta",
+    "r_inv",
+    "nfw_profile",
+    "log_delay",
+    "x_times_delay",
+    "y_times_delay",
+    "x_squared",
+    "y_squared",
+    "xy_cross",
+    "delay_squared",
+    "r_times_delay",
+    "dist_to_sub_x",
+    "dist_to_sub_y",
+    "dist_to_sub_r"
+  ],
+  "target_names": [
+    "init_x",
+    "init_y"
+  ],
+  "metrics": {
+    "mse": 0.22482739537572405,
+    "mae": 0.3806318942509552,
+    "r2": 0.3194289886766718,
+    "mape": 99.37722773485854,
+    "cv_r2_mean": 0.35204674167916483,
+    "cv_r2_std": 0.010745242212153613
+  },
+  "timestamp": "2026-04-26T22:22:51.691718"
+}

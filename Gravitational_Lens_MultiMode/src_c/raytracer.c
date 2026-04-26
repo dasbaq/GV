@@ -1,19 +1,60 @@
 #include "core_engine.h"
 #include <math.h>
 
-// RK4 개념을 적용한 빛의 1스텝 전진 함수
+// 실제 4차 Runge-Kutta (RK4) 개념을 적용한 빛의 1스텝 전진 함수
 void step_ray_rk4(Ray *ray, SimConfig config, double dt) {
-  // 현재 위치에서의 굴절률 기울기(빛을 꺾는 힘) 계산
-  Vec3 grad = get_refractive_index_gradient(ray->pos, config);
+  // k1: 현재 위치(t)에서의 기울기와 속도
+  Vec3 pos_k1 = ray->pos;
+  Vec3 v_k1 = ray->vel;
+  Vec3 a_k1 = get_refractive_index_gradient(pos_k1, config);
 
-  // 1. 빛의 속도(방향) 꺾기
-  ray->vel.x += grad.x * dt;
-  ray->vel.y += grad.y * dt;
+  // k2: 중간점(t + dt/2)에서의 기울기와 속도 (k1 사용)
+  Vec3 pos_k2 = {
+      ray->pos.x + v_k1.x * (dt / 2.0),
+      ray->pos.y + v_k1.y * (dt / 2.0),
+      ray->pos.z + v_k1.z * (dt / 2.0)
+  };
+  Vec3 v_k2 = {
+      ray->vel.x + a_k1.x * (dt / 2.0),
+      ray->vel.y + a_k1.y * (dt / 2.0),
+      ray->vel.z + a_k1.z * (dt / 2.0)
+  };
+  Vec3 a_k2 = get_refractive_index_gradient(pos_k2, config);
 
-  // 2. 빛의 위치 이동하기
-  ray->pos.x += ray->vel.x * dt;
-  ray->pos.y += ray->vel.y * dt;
-  ray->pos.z += ray->vel.z * dt;
+  // k3: 또 다른 중간점(t + dt/2)에서의 기울기와 속도 (k2 사용)
+  Vec3 pos_k3 = {
+      ray->pos.x + v_k2.x * (dt / 2.0),
+      ray->pos.y + v_k2.y * (dt / 2.0),
+      ray->pos.z + v_k2.z * (dt / 2.0)
+  };
+  Vec3 v_k3 = {
+      ray->vel.x + a_k2.x * (dt / 2.0),
+      ray->vel.y + a_k2.y * (dt / 2.0),
+      ray->vel.z + a_k2.z * (dt / 2.0)
+  };
+  Vec3 a_k3 = get_refractive_index_gradient(pos_k3, config);
+
+  // k4: 끝점(t + dt)에서의 기울기와 속도 (k3 사용)
+  Vec3 pos_k4 = {
+      ray->pos.x + v_k3.x * dt,
+      ray->pos.y + v_k3.y * dt,
+      ray->pos.z + v_k3.z * dt
+  };
+  Vec3 v_k4 = {
+      ray->vel.x + a_k3.x * dt,
+      ray->vel.y + a_k3.y * dt,
+      ray->vel.z + a_k3.z * dt
+  };
+  Vec3 a_k4 = get_refractive_index_gradient(pos_k4, config);
+
+  // 최종 위치 및 속도 업데이트 (가중 평균)
+  ray->pos.x += (dt / 6.0) * (v_k1.x + 2.0 * v_k2.x + 2.0 * v_k3.x + v_k4.x);
+  ray->pos.y += (dt / 6.0) * (v_k1.y + 2.0 * v_k2.y + 2.0 * v_k3.y + v_k4.y);
+  ray->pos.z += (dt / 6.0) * (v_k1.z + 2.0 * v_k2.z + 2.0 * v_k3.z + v_k4.z);
+
+  ray->vel.x += (dt / 6.0) * (a_k1.x + 2.0 * a_k2.x + 2.0 * a_k3.x + a_k4.x);
+  ray->vel.y += (dt / 6.0) * (a_k1.y + 2.0 * a_k2.y + 2.0 * a_k3.y + a_k4.y);
+  ray->vel.z += (dt / 6.0) * (a_k1.z + 2.0 * a_k2.z + 2.0 * a_k3.z + a_k4.z);
 }
 
 // 매개변수로 SimConfig config를 받도록 수정!
