@@ -4,6 +4,110 @@
 
 ---
 
+## [2026-05-04] Phase 4 v0.1 truth image solving 및 reject/resample 정책
+
+### 결정
+Phase 4 v0의 SIE-position truth Fermat 평가는 폐기하고, v0.1부터 full truth 시간 지연은
+truth lens 아래에서 수치적으로 푼 image position에서 평가한다.
+
+```
+theta_truth = root(theta - alpha_truth(theta) - beta)
+dt_true     = (1 + z_L) D_dt / c * Delta phi_truth(theta_truth)
+```
+
+root solver는 `scipy.optimize.root(method="hybr")`를 사용한다. 초기값은 SIE-only image이며,
+v0.1은 SIE 해와 truth 해의 1:1 대응만 추적한다. NFW/LOS가 만드는 truth-only extra image의
+전역 탐색은 하지 않는다.
+
+### 운영 규칙
+- truth image dedupe threshold는 `0.01 arcsec`이다.
+- root 수렴 판정은 `success=True`에 더해 residual norm
+  `||theta - alpha_truth(theta) - beta|| < 1e-6 arcsec` 및 finite Jacobian condition number를 요구한다.
+- catalog entry validity criteria:
+  1. truth image root finding 수렴
+  2. finite `dt_true`, `H0_approx`, Fermat values
+  3. `dt_true > 0`
+  4. `abs(mu_truth) < 0.98`
+  5. truth image separation `>= 0.1 arcsec`
+  6. `H0_approx in [45, 90]`
+  7. `dphi_sie / dphi_truth in [0.5, 1.5]`
+- 실패한 시스템은 reject/resample한다. 시스템당 기본 budget은 50회이며
+  `LENS_RESAMPLE_BUDGET`로 override할 수 있다. budget 초과 시 명시적 에러로 종료한다.
+- 이 filter는 generator-level validity filter이며 ARCHITECTURE.md의 simulation parameter range를
+  변경하지 않는다.
+
+### 결과
+- v0.1 500-system catalog 생성 성공. 평균 시도 횟수 `2.614`, 최대 `12`.
+- reject counts: `H0_approx_outside_45_90=670`, `root_find_residual=65`,
+  `mu_truth_ge_0p98=40`, `dedupe_lt2=30`, `image_separation_lt_0p1=2`.
+- `mode1_H0_correction` std는 v0 `81.137`에서 v0.1 `6.273`으로 감소했다.
+- variance decomposition cross term은 v0 `-4612.694`에서 v0.1 `-4.040`으로 감소했다.
+  off/off variance는 `4.10e-19`로 0에 수렴한다.
+- deflection-additive 모델 자체는 v0.1 결과에서 유지한다. 큰 음수 cross term은 모델 문제가 아니라
+  v0의 SIE-position evaluation artifact였던 것으로 판단한다.
+
+### 관련 파일
+- `core/physics/standard_approx.py`
+- `ml/data/error_catalog.py`
+- `tests/test_truth_image_solver.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_1_label_distribution.json`
+- `data/logs/phase4_v0_1_reject_log.json`
+
+## [2026-05-04] Phase 4 truth physics 스코프 및 correction 부호 정정
+
+### 결정
+Phase 4 v0의 full numerical truth는 후보 (a)인 **SIE main + NFW halo + LOS κ_ext**로 둔다.
+구체식은 deflection-additive 방식으로 고정한다.
+
+```
+alpha_truth(theta) = alpha_SIE(theta; sigma_v, q)
+                   + alpha_NFW(theta; M200, concentration, offset=0)
+                   + kappa_ext * theta
+```
+
+Fermat potential은 위 deflection field의 potential을 합산해 계산한다.
+NFW offset은 v0에서 origin-aligned로 두며, offset 분포 도입은 Phase 4 v1에서 별도 결정한다.
+`kappa_ext` 범위는 v2.*와 같은 `[0, 0.1]`을 유지해 v2.6 κ_ext-only baseline과
+분산 분해 비교가 가능하게 한다. NFW/κ_ext off-mode는 `M200 -> 0` 우회가 아니라
+명시적 flag로 제어한다.
+
+### correction 부호 break change
+Phase 4부터 HDF5 schema 정의대로 ML label은 항상 다음 부호를 사용한다.
+
+```
+correction_targets = true_values - approx_outputs
+```
+
+v2.* mock track의 일부 산출물은 `approx - true` 부호로 저장되어 있었다.
+따라서 `target_scaler_phase3_v2_*.pkl` 및 `phase3_v2_*_imgres_best.pt` checkpoint는
+Phase 4 데이터와 호환되지 않으며 로드 금지다. Phase 4 smoke와 재학습은
+`target_scaler_phase4_v0.pkl`처럼 별도 prefix의 scaler를 새로 만들거나 identity scaler를 사용한다.
+
+### 결정 근거
+- IrregularGridLens pixel-grid truth는 물리적으로 가장 정식에 가깝지만 현재 skeleton이라
+  Phase 4 v0 인프라 구현 범위에는 과하다.
+- κ_ext-only mock을 이름만 Phase 4로 바꾸는 회귀를 피하려면 NFW와 LOS를 모두 포함한
+  비trivial label 분산이 필요하다.
+- SIE 표준 근사는 계속 단일 고정이며 `approximation_*`, profile, level 인자를 추가하지 않는다.
+- Mode 2 correction은 정식 inversion solver 전까지 zeros로 유지해 pseudo-label을 만들지 않는다.
+- Mode 3 correction은 schema에 맞춰 source-plane `S_true - S_approx`만 저장한다.
+
+### 운영 규칙
+- Phase 4 v0 카탈로그는 `image_size=64`, `pixel_scale=0.1 arcsec/pix`를 사용한다.
+  이는 1차 검증 속도를 위한 임시 축소이며 Phase 4 v1부터 128 복귀를 검토한다.
+- v2.* HDF5는 baseline std 비교 목적으로 read-only 접근만 허용한다.
+  v2.* scaler, checkpoint, log, HDF5 삭제 또는 덮어쓰기는 금지한다.
+- `simplification_errors/` alias는 ML compatibility를 위해 유지하지만,
+  Phase 4에서는 alias도 `true - approx` 부호를 따른다.
+
+### 관련 파일
+- `core/physics/standard_approx.py`
+- `ml/data/error_catalog.py`
+- `tests/test_standard_approx.py`
+- `tests/test_error_catalog.py`
+- `data/logs/phase4_v0_label_distribution.json`
+
 ## [2026-05-04] Phase 3 v2.* 트랙 종료 및 Phase 4 진입 권고
 
 ### 결정

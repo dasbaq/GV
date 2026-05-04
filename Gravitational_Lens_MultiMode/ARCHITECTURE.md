@@ -235,6 +235,36 @@ simulation_YYYYMMDD_HHMMSS.h5
 학습 데이터 생성: 동일한 (H₀, z_L, z_S, …) 시스템을 두 번 풀이 —
 한 번은 full numerical (truth), 한 번은 SIE 표준 근사. 차이를 `correction_targets/`에 저장.
 
+### Phase 4 구현 모듈
+
+- `core/physics/standard_approx.py`
+  - 프로젝트 전역 단일 SIE 표준 근사를 적용한다.
+  - 입력은 공개 inference-side 키(`H0`, `z_lens`, `z_source`, `sigma_v`, `q`,
+    `source_pos_xy`)만 사용한다.
+  - `M200`, `concentration`, `kappa_ext`, `nfw_offset`는 truth-only 키이므로
+    표준 근사 함수에 전달되면 명시적으로 거부한다.
+  - Mode 1 1차 구현은 SIE Fermat potential 차이와 관측 full-truth delay로
+    closed-form H0 inversion을 수행한다.
+
+- `ml/data/error_catalog.py`
+  - full truth와 SIE 표준 근사의 페어를 생성하고 HDF5 schema의
+    `true_values/`, `approx_outputs/`, `correction_targets/`를 채운다.
+  - Phase 4 v0 truth는 deflection-additive:
+    `alpha_truth(theta) = alpha_SIE(theta) + alpha_NFW(theta) + kappa_ext * theta`.
+  - Phase 4 v0.1부터 full truth 시간 지연은 SIE image 위치가 아니라
+    truth lens 아래에서 수치적으로 푼 image position에서 평가한다:
+    `theta_truth = root(theta - alpha_truth(theta) - beta)`.
+    root 초기값은 SIE-only image이며, v0.1은 SIE-anchored search만 수행한다.
+    truth-only extra image의 전역 탐색은 향후 라운드로 남긴다.
+  - NFW는 origin-aligned, `kappa_ext`는 `[0, 0.1]`, off-mode는 flag로 제어한다.
+  - validity filter는 root 수렴, finite 값, `dt_true > 0`, `abs(mu_truth) < 0.98`,
+    truth image separation `>= 0.1 arcsec`, `H0_approx in [45, 90]`,
+    `dphi_sie / dphi_truth in [0.5, 1.5]`를 요구한다.
+  - Mode 2 correction은 정식 solver 전까지 zeros 유지.
+  - Mode 3 correction은 source-plane `S_true - S_approx`만 저장한다.
+  - v2.* ML 호환을 위해 `simplification_errors/` alias도 저장하지만,
+    부호는 Phase 4 schema와 동일한 `true - approx`이다.
+
 ---
 
 ## 시뮬레이션 파라미터 범위

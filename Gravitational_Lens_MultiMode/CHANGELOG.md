@@ -3,6 +3,88 @@
 
 ---
 
+## [2026-05-04] — Phase 4 v0.1 truth path 정정 + outlier 정책
+
+### 변경
+- `core/physics/standard_approx.py`: SIE image 후보를 `scipy.optimize.root`로
+  SIE-only 해까지 refine하도록 보강. off/off sanity가 다시 0에 수렴하도록 수정.
+- `ml/data/error_catalog.py`: full truth Fermat을 SIE image 위치가 아니라
+  truth lens 아래 numerical root-find한 `theta_truth`에서 평가하도록 정정.
+- truth solver는 `theta - alpha_truth(theta) - beta = 0`을 풀며, 초기값은 SIE-only image.
+  v0.1은 SIE-anchored search만 수행하고 truth-only extra image 전역 탐색은 하지 않는다.
+- validity criteria + reject/resample 도입:
+  root 수렴, finite 값, `dt_true > 0`, `abs(mu_truth) < 0.98`,
+  truth image separation `>= 0.1 arcsec`, `H0_approx in [45, 90]`,
+  `dphi_sie / dphi_truth in [0.5, 1.5]`.
+- `LENS_RESAMPLE_BUDGET` 환경변수로 시스템당 resample budget override 지원
+  (기본 50).
+
+### 산출물
+- `data/mock/phase4_v0_1.h5`: n=500.
+- `data/logs/phase4_v0_1_label_distribution.json`: variance decomposition 및 v2.6 baseline 비교 포함.
+- `data/logs/phase4_v0_1_reject_log.json`: reject/resample 빈도 및 root residual 기록.
+- `data/logs/phase4_v0_diagnosis.json`: v0 SIE-position artifact, D1-D4 진단, E3 n_systems 정정 기록.
+- `data/target_scaler_phase4_v0_1.pkl`: Phase 4 v0.1 smoke 전용 identity scaler.
+- `tests/test_truth_image_solver.py`, `tests/test_phase4_validity.py` 추가.
+
+### 결과
+- v0 실제 시스템 수: 50. v0.1은 plan대로 500 생성.
+- v0.1 `mode1_H0_correction`: mean `17.390`, std `6.273`,
+  min `3.198`, max `34.747`.
+- v2.6 baseline std `3.775` 대비 ratio `1.662`.
+- variance decomposition: off/off `4.10e-19`, NFW-only `39.199`,
+  kappa-only `4.195`, both `39.354`, cross term `-4.040`.
+- truth image shift mean `1.030 arcsec`, max `4.765 arcsec`.
+- root residual norm median `1.72e-12`, max `1.79e-08`.
+- resample attempts mean `2.614`, max `12`; reject counts:
+  `H0_approx_outside_45_90=670`, `root_find_residual=65`,
+  `mu_truth_ge_0p98=40`, `dedupe_lt2=30`, `image_separation_lt_0p1=2`.
+- F1 dedupe threshold `0.01 arcsec`; dedupe된 accepted roots는 0회.
+- ParamEncoder 입력 13차원은 변경 없음; D3 truth-leak 없음.
+
+### 검증
+- `python -m py_compile core/physics/standard_approx.py ml/data/error_catalog.py`
+- `pytest -q tests/test_truth_image_solver.py tests/test_phase4_validity.py tests/test_standard_approx.py tests/test_error_catalog.py`
+  → 10 passed.
+- Phase 4 v0.1 HDF5 + `target_scaler_phase4_v0_1.pkl`로
+  `LensCorrectionDataset` 및 `MultiModalErrorCorrector` forward+backward 1 batch smoke 통과.
+- 전체 `pytest -q tests/ --tb=short`: 85 passed, 6 skipped, 19 failed.
+  실패는 D4 분류대로 legacy ML fixture/schema cleanup 대상이며 Phase 4 v0.1 category C는 0개.
+
+## [2026-05-04] — Phase 4 standard_approx + error_catalog 1차 구현
+
+### 추가
+- `core/physics/standard_approx.py`: SIE 단일 표준 근사 적용 함수와 closed-form
+  Mode 1 H0 역산 helper 추가. 입력은 공개 SIE approximation 키만 허용하고
+  `M200`, `concentration`, `kappa_ext`, `nfw_offset` truth-only 키는 명시적으로 거부.
+- `ml/data/error_catalog.py`: full truth와 SIE approx를 페어링해
+  `true_values/`, `approx_outputs/`, `correction_targets/` HDF5 그룹을 생성.
+- `tests/test_standard_approx.py`, `tests/test_error_catalog.py`: signature/docstring,
+  truth-only 키 차단, HDF5 schema, `correction = true - approx`, off/off sanity 검증 추가.
+- `data/mock/phase4_v0.h5`: n=50 small 검증 카탈로그 생성.
+- `data/logs/phase4_v0_label_distribution.json`: B1 variance decomposition 및
+  B2 v2.6 baseline std read-only 비교 기록.
+- `data/target_scaler_phase4_v0.pkl`: Phase 4 smoke 전용 identity scaler 생성.
+
+### 결정 반영
+- truth physics: `alpha_truth(theta) = alpha_SIE(theta) + alpha_NFW(theta) + kappa_ext * theta`.
+  NFW는 origin-aligned, `kappa_ext` 범위는 `[0, 0.1]`로 유지.
+- 부호 정정: Phase 4부터 correction label은 HDF5 schema 정의대로
+  `true - approx`. v2.*의 `approx - true` 계열 scaler/checkpoint와 호환하지 않는다.
+- Mode 2 correction은 정식 solver 전까지 zeros 유지.
+- Mode 3 correction은 source-plane `S_true - S_approx`만 저장한다.
+- Phase 4 v0만 `image_size=64`, `pixel_scale=0.1 arcsec/pix`로 시야를 유지한다.
+  Phase 4 v1부터 기본 128 복귀 예정.
+
+### 검증
+- `python -m py_compile core/physics/standard_approx.py ml/data/error_catalog.py`
+- `pytest -q tests/test_standard_approx.py tests/test_error_catalog.py` → 6 passed.
+- `python -m ml.data.error_catalog --n-systems 50 --output data/mock/phase4_v0.h5`
+- Phase 4 HDF5 + `target_scaler_phase4_v0.pkl`로 `LensCorrectionDataset` 및
+  `MultiModalErrorCorrector` forward+backward 1 batch smoke 통과.
+- 전체 `pytest -q tests/`: 81 passed, 6 skipped, 19 failed. 실패는 기존 ML 테스트 fixture의
+  stale param/image shape 및 legacy mock HDF5 schema 문제로 확인되어 다음 ML 정리 라운드에서 처리.
+
 ## [2026-05-04] — GitHub push 전 대용량 산출물 ignore 보강
 
 ### 추가

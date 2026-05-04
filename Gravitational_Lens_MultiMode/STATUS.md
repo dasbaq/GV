@@ -11,7 +11,7 @@
 [x] Phase 1 — 시간 지연 추출 엔진
 [x] Phase 2 — 중력렌즈 물리 모델
 [ ] Phase 3 — 대규모 시뮬레이션 생성
-[ ] Phase 4 — 표준 근사 + 오차 카탈로그
+[x] Phase 4 — 표준 근사 + 오차 카탈로그
 [ ] Phase 5 — Mode별 역산 + 멀티모달 ML 오차 보정
 ```
 
@@ -77,9 +77,9 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 ## Phase 4 — 표준 근사 + 오차 카탈로그
 
 ```
-[ ] standard_approx.py   — SIE 표준 근사 적용 함수
+[x] standard_approx.py   — SIE 표준 근사 적용 함수
                           (full_truth → approx_outputs 변환)
-[ ] error_catalog.py     — full_numerical과 SIE 결과 페어링 →
+[x] error_catalog.py     — full_numerical과 SIE 결과 페어링 →
                           correction_targets 저장
 ```
 
@@ -158,13 +158,29 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
   CI `[0.580, 0.716]`는 calibration 목표 `[0.62, 0.78]`와 겹침.
 - `scripts/v2_6_round.py`는 Kaggle CUDA 이식을 위해 `LENS_DATA_ROOT`/`LENS_DATA_PATH`
   및 `LENS_WORK_ROOT` 환경변수와 `--device`, `--workers`, `--epochs` 옵션을 지원함.
+- Phase 4부터 correction label 부호는 HDF5 schema 정의대로 `true - approx`이다.
+  v2.* `target_scaler_phase3_v2_*.pkl` 및 `phase3_v2_*_imgres_best.pt` checkpoint는
+  Phase 4 데이터와 호환 불가이며 로드 금지.
+- `pytest -q tests/` 전체 회귀는 기존 ML fixture의 stale param/image shape 및 legacy mock
+  HDF5 schema 문제로 19개 실패가 남아 있다. Phase 4 신규 테스트와 Phase 4 HDF5
+  forward/backward smoke는 통과.
+- Phase 4 v0은 50-system small catalog였고 truth Fermat을 SIE image 위치에서 평가하는
+  artifact가 확인되어 baseline 비교용으로만 보존한다.
+- Phase 4 v0.1은 truth lens 아래 `theta - alpha_truth(theta) - beta = 0` root-find로
+  truth image 위치를 다시 풀고 validity filter + reject/resample을 적용한 500-system catalog다.
+  `mode1_H0_correction` std `6.273`, min/max `3.198/34.747`, cross term `-4.040`,
+  off/off variance `4.10e-19`.
+- Legacy test 실패 분류: Category A 8개는 ML param/image fixture stale
+  (`tests/test_corrector.py` 6개, `tests/test_encoders.py` 2개), Category B 11개는
+  legacy mock HDF5 schema 의존(`tests/test_dataset.py` 7개, `tests/test_trainer.py` 4개).
+  Category C(Phase 4 v0.1 즉시 수정 필요)는 0개.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 — 표준 근사 + 오차 카탈로그
-3. v2.6 수용 결과에 따라 v2.* mock leak 추적 트랙 종료, Phase 4 정식 error catalog 진입
+2. Phase 4 v0.1 카탈로그로 ML 재학습 라운드 수행
+3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
-5. Phase 5는 Phase 3~4 미완 상태에서 `data/mock/mock_dataset.h5`로 smoke training 후 실제 HDF5로 교체
+5. Phase 5는 Phase 4 HDF5로 smoke training 후 정식 재학습 파이프라인으로 교체
