@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from pathlib import Path
 from multimodal_model import GravitationalLensMultiModal, custom_multimodal_loss
 from multimodal_dataset import GravitationalLensDataset
 
@@ -21,20 +22,44 @@ def train():
         print("GPU를 찾을 수 없어 CPU 모드로 학습합니다.")
 
     # 3. 데이터 로더 준비
-    # 실제 경로에 맞는 CSV 파일을 지정하세요.
-    dataset = GravitationalLensDataset(spatial_csv='data/outputs/raytrace_mode_1.csv')
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # 전처리된 캐시 데이터(.pt) 경로 지정
+    project_root = Path(__file__).resolve().parents[2]
+    pt_path = project_root / "data" / "cached_dataset.pt"
+    dataset = GravitationalLensDataset(pt_path=pt_path)
+    
+    train_loader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        num_workers=0,
+        pin_memory=(device.type == "cuda")
+    )
 
     # 4. 모델 및 최적화 도구 초기화
     # lc_input_dim: 시간, 밝기(2) / spatial_input_dim: 좌표(4) / output: 파라미터(2)
     model = GravitationalLensMultiModal(lc_input_dim=2, spatial_input_dim=4, output_dim=2).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15)
     
     # 5. 학습 루프 시작
     model.train()
     for epoch in range(epochs):
         running_loss = 0.0
         for i, (lc_data, spatial_data, targets) in enumerate(train_loader):
+            # 첫 번째 에폭의 첫 번째 배치에서 스케일링(Standardization) 상태 디버깅 검증
+            if epoch == 0 and i == 0:
+                print("\n🔍 [데이터 검증] 첫 번째 배치 스케일링 상태:")
+                print(f"   - 광도곡선(lc_data) 평균: {lc_data.mean().item():.4f}, 분산: {lc_data.var().item():.4f}")
+                print(f"   - 공간정보(spatial_data) 평균: {spatial_data.mean().item():.4f}, 분산: {spatial_data.var().item():.4f}")
+                print(f"   - 정답(targets) 평균: {targets.mean().item():.4f}, 분산: {targets.var().item():.4f}")
+                
+                print("\n🔍 [Sanity Check] 첫 번째 배치 샘플 확인:")
+                print(f"   - 1번 샘플 타겟값: {targets[0].tolist()}")
+                if len(targets) > 1:
+                    print(f"   - 2번 샘플 타겟값: {targets[1].tolist()}")
+                print(f"   - 1번 샘플 lc_data 100개 중 플럭스 합: {lc_data[0][:, 1].sum().item():.4f}")
+                print(f"   - lc_data 전체가 0인가? {torch.all(lc_data == 0).item()}\n")
+
             # 데이터를 장치(GPU)로 이동
             lc_data, spatial_data, targets = lc_data.to(device), spatial_data.to(device), targets.to(device)
             
@@ -51,7 +76,11 @@ def train():
             
             running_loss += loss.item()
             
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss/len(train_loader):.4f}")
+        epoch_loss = running_loss/len(train_loader)
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.4f}")
+        
+        # 스케줄러 업데이트
+        scheduler.step(epoch_loss)
 
     # 6. 학습된 모델 저장
     torch.save(model.state_dict(), "gravitational_lens_model.pth")

@@ -27,10 +27,10 @@ class SpatialExtractor(nn.Module):
         # 공간 데이터가 1D로 펼쳐진 좌표/특징 값이라고 가정 (MLP 구조)
         # 만약 픽셀 이미지(2D)라면 CNN(nn.Conv2d 등)으로 변경해야 합니다.
         self.network = nn.Sequential(
-            nn.Linear(input_features, 128),
+            nn.Linear(input_features, 256),
             nn.ReLU(),
-            nn.BatchNorm1d(128),
-            nn.Linear(128, hidden_dim),
+            nn.BatchNorm1d(256),
+            nn.Linear(256, hidden_dim),
             nn.ReLU()
         )
         
@@ -45,16 +45,20 @@ class GravitationalLensMultiModal(nn.Module):
     def __init__(self, lc_input_dim=2, spatial_input_dim=10, output_dim=3):
         super(GravitationalLensMultiModal, self).__init__()
         
-        # Branch A와 Branch B 초기화
-        self.lc_branch = LightcurveExtractor(input_dim=lc_input_dim, hidden_dim=64)
-        self.spatial_branch = SpatialExtractor(input_features=spatial_input_dim, hidden_dim=64)
+        # Branch A와 Branch B 초기화 (용량 증대: 64 -> 128)
+        self.lc_branch = LightcurveExtractor(input_dim=lc_input_dim, hidden_dim=128, num_layers=3)
+        self.spatial_branch = SpatialExtractor(input_features=spatial_input_dim, hidden_dim=128)
         
-        # 융합된 벡터(64 + 64 = 128)를 받아 최종 파라미터를 예측하는 FCN
+        # 융합된 벡터(128 + 128 = 256)를 받아 최종 파라미터를 예측하는 깊은 FCN
         self.fusion_layer = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.3), # 과적합 방지
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.3), # 과적합 방지
-            nn.Linear(64, output_dim) # 최종 예측할 파라미터 개수 (예: 질량, 반경, 전단력)
+            nn.Dropout(0.3),
+            nn.Linear(64, output_dim) # 최종 예측할 파라미터 개수
         )
         
     def forward(self, lc_data, spatial_data):

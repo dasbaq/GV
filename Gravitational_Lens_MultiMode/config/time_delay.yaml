@@ -1,0 +1,41 @@
+grid:
+  dt_try_range:    [1.0, 200.0]   # days
+  dt_try_step:     0.1            # days
+  mu_try_range:    [-0.99, 0.99]  # |μ| < 1 강제
+  mu_try_step:     0.02
+
+reconstruction:
+  series_truncation_tol: 1.0e-6
+  max_series_terms:      200
+  boundary_strategy:     "extrapolate_zero"   # "extrapolate_zero" | "reflect" | "drop"
+  interpolation:         "cubic"              # "linear" | "cubic"
+
+smoothing:
+  method:           "shafieloo"
+  n_iterations:     50
+  bandwidth_method: "silverman"   # "silverman" | "cv" | float
+  bandwidth_min:    1.0           # days
+  bandwidth_max:    50.0          # days
+
+fluctuation:
+  diff_order: 1                   # 1차 차분 (Bag et al. eq. 3)
+  detrend:    false
+
+selection:
+  conservative:
+    sigma_threshold: -2.0
+    require_pair:    true
+  relaxed:
+    sigma_threshold: -1.0
+    depth_fraction:  0.5
+
+uncertainty:
+  bootstrap_n: 200
+  noise_realization: "gaussian"
+
+io:
+  results_dir: "results/"
+  compression: "gzip"
+  save_sigma_map: true            # Phase 5 ML 입력으로도 사용
+
+seed: 42
