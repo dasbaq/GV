@@ -45,6 +45,45 @@ substructure, 다중 평면 효과 등)를 매번 numerically 풀면 너무 느�
 
 ---
 
+## 워크플로우 — M2 전처리 / Kaggle GPU 학습
+
+정식 라운드는 환경별 역할을 분리한다.
+
+| 단계 | 실행 환경 | 진입점 | 산출물 |
+|---|---|---|---|
+| 시뮬레이션/카탈로그 생성 | M2 Air 로컬 | `scripts/build_*.py` 또는 `src_py/simulation/generator.py` | `data/mock/*.h5` |
+| 라벨 분포 sanity, floor 분석 | M2 Air 로컬 | `scripts/floor_analysis_*.py` 또는 라운드별 분석 코드 | `data/logs/*.json`, `data/target_scaler_*.pkl` |
+| ML 학습 + bootstrap | Kaggle CUDA | `scripts/<round>_round.py` | checkpoint, eval JSON |
+| 결과 분석/문서화 | M2 Air 로컬 | 직접 분석 | 문서, 로컬 ignored artifacts |
+
+표준 round 스크립트는 다음 환경변수를 지원한다.
+
+| 변수 | 의미 |
+|---|---|
+| `LENS_DATA_PATH` | 학습/검증 HDF5 절대경로 |
+| `LENS_DATA_PATH_UNFILTERED` | selection bias 평가용 HDF5 절대경로 |
+| `LENS_DATA_ROOT` | 개별 path 미지정 시 fallback 디렉토리 |
+| `LENS_WORK_ROOT` | checkpoint/log/scaler 출력 prefix |
+| `LENS_SCALER_PATH` | scaler pkl 절대경로. 명시 시 read-only input으로 취급 |
+
+`data/`의 운영 구조:
+
+```
+data/
+├── mock/                 # 카탈로그(.h5), Kaggle Dataset 업로드 대상
+├── checkpoints/          # 학습 산출물, M2 <-> Kaggle 동기화
+├── logs/                 # 평가 JSON, Kaggle 출력 회수 대상
+├── runs/                 # tensorboard 등 임시 산출물
+└── target_scaler_*.pkl   # scaler, 카탈로그와 함께 업로드
+```
+
+`.h5`, `.pkl`, `.pt` 및 위 artifact 디렉토리는 git에 커밋하지 않는다.
+공유는 Kaggle Dataset을 통해 수행하고, 결과는 Kaggle output에서 회수한다.
+round 스크립트는 `--phase {equivalence,train,all}` dispatcher로 M2 equivalence와
+Kaggle train/eval을 분리하며, smoke run은 acceptance/leak 판정을 건너뛴다.
+
+---
+
 ## 세 가지 역산 Mode
 
 | Mode | 입력 | 출력 | 상태 |

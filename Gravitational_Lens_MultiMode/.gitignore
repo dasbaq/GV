@@ -2,6 +2,8 @@
 *.h5
 *.pkl
 *.pt
+kaggle.json
+**/kaggle.json
 
 data/mock/
 data/checkpoints/

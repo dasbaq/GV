@@ -3,6 +3,39 @@
 
 ---
 
+## [2026-05-05] — 워크플로우 구조 정착 (M2 전처리 / Kaggle GPU 학습)
+
+### 추가
+- `scripts/lib/round_common.py`: round 스크립트 공통 환경변수, 경로 builder,
+  device 선택, DataLoader kwargs, `--phase {equivalence,train,all}` CLI helper 추가.
+- `scripts/sync_to_kaggle.py`: M2 산출물(`.h5`, scaler, unfiltered eval, equivalence JSON)을
+  Kaggle Dataset 업로드 staging/dry-run으로 묶는 helper 추가.
+- `scripts/fetch_kaggle_results.py`: Kaggle notebook output 또는 zip에서 checkpoint/log를
+  로컬 `data/checkpoints/`, `data/logs/`로 회수하는 helper 추가. 기존 파일은 덮어쓰지 않는다.
+- `notebooks/kaggle_round_template.ipynb`: Kaggle CUDA 실행 템플릿 추가.
+- `RUNBOOK.md`: M2 equivalence → Kaggle train → M2 fetch/documentation 체크리스트 추가.
+
+### 변경
+- `scripts/v2_6_round.py`, `scripts/phase4_v0_1_round.py`:
+  - `LENS_DATA_PATH`, `LENS_DATA_PATH_UNFILTERED`, `LENS_DATA_ROOT`,
+    `LENS_WORK_ROOT`, `LENS_SCALER_PATH` 표준 지원.
+  - `--phase equivalence`: forward diff + multi-seed 1-epoch 분포만 실행하고
+    `data/logs/<round>_equivalence.json`을 출력.
+  - `--phase train`: Kaggle CUDA 학습/eval만 수행하고 `--equivalence-from` JSON을 보고에 합성.
+  - `--phase all`: 기존 결합 흐름 호환.
+  - `--min-epochs-for-acceptance` gate 추가. 짧은 sanity는 `acceptance: skipped_smoke`,
+    `leak_triggered: null`로 기록한다.
+  - NaN loss 진단 필드(`nan_detected`, `nan_batches`, grad/parameter norm)를 epoch history에 기록.
+- `.gitignore`: `kaggle.json`, `**/kaggle.json` ignore 추가.
+- `AGENTS.md`, `ARCHITECTURE.md`, `DECISIONS.md`, `STATUS.md`: M2/Kaggle 분업과 phase 정책 반영.
+
+### 검증
+- `python -m py_compile scripts/lib/round_common.py scripts/v2_6_round.py scripts/phase4_v0_1_round.py scripts/sync_to_kaggle.py scripts/fetch_kaggle_results.py`
+- `python scripts/phase4_v0_1_round.py --help`
+- `python scripts/v2_6_round.py --help`
+- `notebooks/kaggle_round_template.ipynb` JSON parse 확인.
+- 로컬 sandbox에서 CUDA/MPS가 unavailable이라 `--phase equivalence`와 GPU train smoke는 실행하지 못함.
+
 ## [2026-05-04] — Phase 4 v0.1 truth path 정정 + outlier 정책
 
 ### 변경

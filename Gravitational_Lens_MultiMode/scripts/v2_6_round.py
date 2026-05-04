@@ -11,7 +11,6 @@ import argparse
 import copy
 import json
 import math
-import os
 import pickle
 import sys
 import time
@@ -32,36 +31,41 @@ from ml.models.error_corrector import MultiModalErrorCorrector
 from ml.training.dataset import LensCorrectionDataset
 from ml.training.losses import composite_loss
 from ml.utils.seed import set_seed
+from scripts.lib.round_common import (
+    add_phase_args,
+    build_round_paths,
+    dataloader_kwargs,
+    default_worker_candidate,
+    display_path as _display_path,
+    load_equivalence_payload,
+    select_device,
+    should_run_acceptance,
+    skipped_acceptance,
+)
 
 DATA_NAME = "real_phase3_v2_6.h5"
-DATA_ROOT = Path(os.environ.get("LENS_DATA_ROOT", ROOT / "data"))
-WORK_ROOT = Path(os.environ.get("LENS_WORK_ROOT", ROOT / "data"))
-
-
-def _resolve_data_path() -> Path:
-    exact = os.environ.get("LENS_DATA_PATH")
-    if exact:
-        return Path(exact)
-    mock_path = DATA_ROOT / "mock" / DATA_NAME
-    if mock_path.exists():
-        return mock_path
-    return DATA_ROOT / DATA_NAME
-
-
-DATA = _resolve_data_path()
-SCALER = WORK_ROOT / "target_scaler_phase3_v2_6.pkl"
-CKPT = WORK_ROOT / "checkpoints" / "phase3_v2_6_imgres_best.pt"
-HISTORY = WORK_ROOT / "logs" / "phase3_v2_6_imgres_long_history.json"
-EVAL = WORK_ROOT / "logs" / "phase3_v2_6_imgres_h0_eval.json"
-INFRA = WORK_ROOT / "logs" / "phase3_v2_6_infra_equivalence.json"
-RUNS = WORK_ROOT / "runs" / "phase3_v2_6_round"
+PATHS = build_round_paths(
+    root=ROOT,
+    data_name=DATA_NAME,
+    round_name="phase3_v2_6_round",
+    checkpoint_name="phase3_v2_6_imgres_best.pt",
+    history_name="phase3_v2_6_imgres_long_history.json",
+    eval_name="phase3_v2_6_imgres_h0_eval.json",
+    infra_name="phase3_v2_6_infra_equivalence.json",
+    scaler_name="target_scaler_phase3_v2_6.pkl",
+)
+DATA = PATHS.data
+SCALER = PATHS.scaler
+CKPT = PATHS.checkpoint
+HISTORY = PATHS.history
+EVAL = PATHS.eval
+INFRA = PATHS.infra
+RUNS = PATHS.runs
+EQUIVALENCE = PATHS.work_root / "logs" / "phase3_v2_6_equivalence.json"
 
 
 def display_path(path: Path) -> str:
-    try:
-        return str(path.relative_to(ROOT))
-    except ValueError:
-        return str(path)
+    return _display_path(path, ROOT)
 
 
 def load_cfg(epochs: int | None = None) -> dict:
@@ -70,24 +74,6 @@ def load_cfg(epochs: int | None = None) -> dict:
     cfg["training"]["epochs"] = 50 if epochs is None else int(epochs)
     cfg["training"]["early_stop_patience"] = 8
     return cfg
-
-
-def select_device(name: str) -> torch.device:
-    if name == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-    if name == "mps" and not torch.backends.mps.is_available():
-        raise RuntimeError("MPS is not available in this process.")
-    if name == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available in this process.")
-    return torch.device(name)
-
-
-def default_worker_candidate(device: torch.device) -> int:
-    return 4 if device.type == "cuda" else 4 if device.type == "mps" else 0
 
 
 def build_model(cfg: dict) -> MultiModalErrorCorrector:
@@ -119,13 +105,12 @@ def build_loader(cfg: dict, split: str, modes: list[int], approx_levels: list[in
                  scaler: dict | None, seed: int, workers: int, device: torch.device,
                  train: bool, batch_size: int | None = None) -> DataLoader:
     ds = build_dataset(cfg, split, modes, approx_levels, scaler, seed)
-    kwargs = {
-        "batch_size": batch_size or cfg["training"]["batch_size"],
-        "num_workers": workers,
-        "pin_memory": device.type == "cuda",
-    }
-    if workers > 0:
-        kwargs["persistent_workers"] = True
+    kwargs = dataloader_kwargs(
+        batch_size=batch_size or cfg["training"]["batch_size"],
+        workers=workers,
+        device=device,
+        train=train,
+    )
     if train:
         w_map = {1: 1.0, 2: 1.0, 3: 1.0}
         weights = torch.tensor([w_map[e[3]] for e in ds._index], dtype=torch.float)
@@ -134,8 +119,6 @@ def build_loader(cfg: dict, split: str, modes: list[int], approx_levels: list[in
         kwargs["sampler"] = WeightedRandomSampler(
             weights, num_samples=len(weights), replacement=True, generator=gen
         )
-    else:
-        kwargs["shuffle"] = False
     return DataLoader(ds, **kwargs)
 
 
@@ -273,7 +256,8 @@ def train_one(cfg: dict, seed: int, device_name: str, workers: int,
         epoch_t0 = time.time()
         tr = run_epoch(model, train_loader, opt, scaler_amp, cfg, device, True, use_amp)
         vl = run_epoch(model, val_loader, opt, scaler_amp, cfg, device, False, use_amp)
-        scheduler.step()
+        if tr.get("optimizer_step_happened", False):
+            scheduler.step()
         wall_time = time.time() - epoch_t0
         entry = {
             "epoch": epoch + 1,
@@ -283,6 +267,13 @@ def train_one(cfg: dict, seed: int, device_name: str, workers: int,
             "val_loss": vl["total"],
             "wall_time": wall_time,
             "lr": opt.param_groups[0]["lr"],
+            "nan_detected": bool(tr.get("nan_detected", False) or vl.get("nan_detected", False)),
+            "nan_batches": {
+                "train": tr.get("nan_batches", []),
+                "val": vl.get("nan_batches", []),
+            },
+            "last_grad_norm": tr.get("last_grad_norm"),
+            "last_param_norm": tr.get("last_param_norm"),
         }
         history.append(entry)
         val_key = vl[criterion]
@@ -304,6 +295,9 @@ def train_one(cfg: dict, seed: int, device_name: str, workers: int,
             no_improve += 1
             if no_improve >= patience:
                 break
+        if entry["nan_detected"] and len(history) >= 2 and history[-2].get("nan_detected"):
+            print("NaN detected in two consecutive epochs; stopping without tuning.", flush=True)
+            break
     if best_state is not None:
         model.load_state_dict(best_state)
     return {
@@ -325,8 +319,12 @@ def run_epoch(model: torch.nn.Module, loader: DataLoader, opt, scaler_amp, cfg: 
     model.train(train)
     agg: dict[str, float] = {}
     n = 0
+    nan_batches: list[int] = []
+    last_grad_norm: float | None = None
+    last_param_norm: float | None = None
+    optimizer_step_happened = False
     with torch.set_grad_enabled(train):
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader):
             batch = move_batch(batch, device)
             with torch.amp.autocast("cuda", enabled=use_amp):
                 pred = model(
@@ -339,17 +337,40 @@ def run_epoch(model: torch.nn.Module, loader: DataLoader, opt, scaler_amp, cfg: 
                     target_mode=batch["target_mode"].to(device),
                 )
                 losses = composite_loss(pred, batch, cfg["training"]["loss_weights"])
+            if not torch.isfinite(losses["total"]):
+                nan_batches.append(batch_idx)
+            for k, v in losses.items():
+                agg[k] = agg.get(k, 0.0) + float(v.detach().cpu())
+            n += 1
+            if nan_batches and nan_batches[-1] == batch_idx:
+                continue
             if train:
                 opt.zero_grad(set_to_none=True)
                 scaler_amp.scale(losses["total"]).backward()
                 scaler_amp.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                last_grad_norm = float(grad_norm.detach().cpu()) if torch.is_tensor(grad_norm) else float(grad_norm)
+                scale_before = scaler_amp.get_scale() if use_amp else None
                 scaler_amp.step(opt)
                 scaler_amp.update()
-            for k, v in losses.items():
-                agg[k] = agg.get(k, 0.0) + float(v.detach().cpu())
-            n += 1
-    return {k: v / max(n, 1) for k, v in agg.items()}
+                scale_after = scaler_amp.get_scale() if use_amp else None
+                optimizer_step_happened = optimizer_step_happened or not (
+                    use_amp and scale_after is not None and scale_before is not None and scale_after < scale_before
+                )
+                with torch.no_grad():
+                    total_sq = torch.tensor(0.0, device=device)
+                    for p in model.parameters():
+                        total_sq = total_sq + p.detach().float().pow(2).sum()
+                    last_param_norm = float(torch.sqrt(total_sq).detach().cpu())
+    result = {k: v / max(n, 1) for k, v in agg.items()}
+    result.update({
+        "nan_detected": bool(nan_batches),
+        "nan_batches": nan_batches,
+        "last_grad_norm": last_grad_norm,
+        "last_param_norm": last_param_norm,
+        "optimizer_step_happened": optimizer_step_happened,
+    })
+    return result
 
 
 def distribution_equivalence(cfg: dict, scaler: dict, target_device_name: str,
@@ -605,16 +626,48 @@ def evaluate_model(cfg: dict, scaler: dict, training_summary: dict,
 
 def delete_partial_outputs() -> list[dict]:
     rows = []
-    for path in [CKPT, SCALER]:
+    paths = [CKPT] if PATHS.scaler_from_env else [CKPT, SCALER]
+    for path in paths:
         existed = path.exists()
         if existed:
             path.unlink()
         rows.append({"path": display_path(path), "existed": existed, "deleted": existed})
+    if PATHS.scaler_from_env:
+        rows.append({"path": display_path(SCALER), "existed": SCALER.exists(), "deleted": False})
     return rows
+
+
+def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candidate: int) -> dict:
+    RUNS.mkdir(parents=True, exist_ok=True)
+    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase3_v2_6_temp.pkl", cfg["seed"])
+    fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
+    dist_workers = 0 if target_device.type == "mps" else worker_candidate
+    dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
+    result = {
+        "round": "phase3_v2_6",
+        "phase": "equivalence",
+        "device": {
+            "target": target_device.type,
+            "torch": torch.__version__,
+            "cuda_available": bool(torch.cuda.is_available()),
+            "mps_available": bool(torch.backends.mps.is_available()),
+        },
+        "forward_only": fwd,
+        "distribution_equivalence": dist,
+        "passed": bool(fwd["passed"] and dist["passed"]),
+        "next": "next: --phase train on CUDA",
+    }
+    EQUIVALENCE.parent.mkdir(parents=True, exist_ok=True)
+    with open(EQUIVALENCE, "w") as f:
+        json.dump(result, f, indent=2)
+    print(json.dumps(result, indent=2))
+    print("next: --phase train on CUDA")
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    add_phase_args(parser)
     parser.add_argument("--bootstrap-n", type=int, default=1000)
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     parser.add_argument("--workers", type=int, default=None,
@@ -635,32 +688,40 @@ def main() -> None:
     )
     RUNS.mkdir(parents=True, exist_ok=True)
 
-    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase3_v2_6_temp.pkl", cfg["seed"])
-    fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
-    infra = {"forward_only": fwd}
-    if not fwd["passed"]:
-        with open(INFRA, "w") as f:
-            json.dump(infra, f, indent=2)
-        raise SystemExit("Forward-only equivalence failed.")
+    if args.phase == "equivalence":
+        run_equivalence_phase(cfg, target_device, worker_candidate)
+        return
 
-    dist_workers = 0 if target_device.type == "mps" else worker_candidate
-    dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
-    infra["distribution_equivalence"] = dist
-    if not dist["passed"]:
-        with open(INFRA, "w") as f:
-            json.dump(infra, f, indent=2)
-        raise SystemExit("Distribution equivalence failed.")
+    infra = {"equivalence_handoff": load_equivalence_payload(args.equivalence_from)}
+    if args.phase == "all":
+        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase3_v2_6_temp.pkl", cfg["seed"])
+        fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
+        infra["forward_only"] = fwd
+        if not fwd["passed"]:
+            with open(INFRA, "w") as f:
+                json.dump(infra, f, indent=2)
+            raise SystemExit("Forward-only equivalence failed.")
 
-    speed = speed_table(cfg, temp_scaler, target_device.type, worker_candidate, args.workers)
-    infra["speed"] = speed
-    if not speed["passed"]:
-        with open(INFRA, "w") as f:
-            json.dump(infra, f, indent=2)
-        raise SystemExit(f"{target_device.type.upper()} speedup < 2x.")
+        dist_workers = 0 if target_device.type == "mps" else worker_candidate
+        dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
+        infra["distribution_equivalence"] = dist
+        if not dist["passed"]:
+            with open(INFRA, "w") as f:
+                json.dump(infra, f, indent=2)
+            raise SystemExit("Distribution equivalence failed.")
+
+        speed = speed_table(cfg, temp_scaler, target_device.type, worker_candidate, args.workers)
+        infra["speed"] = speed
+        if not speed["passed"]:
+            with open(INFRA, "w") as f:
+                json.dump(infra, f, indent=2)
+            raise SystemExit(f"{target_device.type.upper()} speedup < 2x.")
+        selected_workers = int(speed["selected_workers_for_full_retrain"])
+    else:
+        selected_workers = default_worker_candidate(target_device) if args.workers is None else int(args.workers)
 
     infra["partial_output_deletion"] = delete_partial_outputs()
-    full_scaler = create_target_scaler(DATA, SCALER, cfg["seed"])
-    selected_workers = int(speed["selected_workers_for_full_retrain"])
+    full_scaler = load_scaler() if PATHS.scaler_from_env else create_target_scaler(DATA, SCALER, cfg["seed"])
     full = train_one(
         cfg,
         cfg["seed"],

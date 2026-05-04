@@ -4,6 +4,55 @@
 
 ---
 
+## [2026-05-05] M2 전처리 / Kaggle GPU 학습 분업 및 round phase 분리
+
+### 결정
+라운드 운영은 M2 로컬 전처리와 Kaggle CUDA 학습으로 분리한다.
+
+| 단계 | 실행 환경 | 역할 |
+|---|---|---|
+| 카탈로그 생성, scaler, floor/oracle sanity | M2 Air 로컬 | deterministic seed로 데이터셋 고정 |
+| equivalence phase | M2 Air 로컬 | CPU vs accelerator forward diff 및 multi-seed 1-epoch 분포 확인 |
+| train phase | Kaggle CUDA | full retrain, bootstrap, acceptance/leak 판정 |
+| 결과 회수/문서화 | M2 Air 로컬 | checkpoint/log 분석 및 문서 반영 |
+
+round 스크립트는 `--phase {equivalence,train,all}`을 공통 지원한다.
+기본값은 `train`이다. `all`은 기존 결합 실행 흐름을 보존하기 위한 호환 모드다.
+
+### 환경변수 표준
+모든 round 스크립트는 다음 환경변수를 지원한다.
+
+- `LENS_DATA_PATH`: 학습/검증 HDF5 절대경로
+- `LENS_DATA_PATH_UNFILTERED`: selection bias 평가용 HDF5 절대경로
+- `LENS_DATA_ROOT`: 개별 path 미지정 시 fallback prefix
+- `LENS_WORK_ROOT`: checkpoint/log/scaler 출력 prefix
+- `LENS_SCALER_PATH`: scaler pkl 절대경로. 명시 시 read-only input으로 취급하고 삭제/재생성하지 않는다.
+
+### acceptance epoch gate
+short sanity run의 false-positive를 막기 위해 acceptance/leak 판정은 다음 조건을 모두 만족할 때만 수행한다.
+
+1. `--phase`가 `train` 또는 `all`
+2. `epochs >= --min-epochs-for-acceptance` (기본 10)
+3. early stop 발동 또는 max epoch 도달
+
+조건 미충족 시 JSON에는 `acceptance: skipped_smoke`, `leak_triggered: null`을 기록한다.
+임계값과 공식은 변경하지 않고 gate만 추가한다.
+
+### 결정 근거
+- M2 MPS는 CPU 대비 빠르지만 full retrain에는 Kaggle T4/P100이 더 적합하다.
+- Kaggle 세션의 CPU multi-seed equivalence는 비용이 커서 학습 세션에서 반복하지 않는다.
+- 카탈로그 생성은 stochastic하므로 M2에서 seed와 artifact를 먼저 굳히고 Kaggle Dataset으로 공유한다.
+- 2 epoch sanity는 수렴 전 모델이므로 acceptance/leak trigger 평가 대상이 아니다.
+
+### 관련 파일
+- `scripts/lib/round_common.py`
+- `scripts/v2_6_round.py`
+- `scripts/phase4_v0_1_round.py`
+- `scripts/sync_to_kaggle.py`
+- `scripts/fetch_kaggle_results.py`
+- `notebooks/kaggle_round_template.ipynb`
+- `RUNBOOK.md`
+
 ## [2026-05-04] Phase 4 v0.1 truth image solving 및 reject/resample 정책
 
 ### 결정

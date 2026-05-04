@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
 
-마지막 업데이트: 2026-05-04
+마지막 업데이트: 2026-05-05
 
 ---
 
@@ -129,6 +129,21 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 
 ---
 
+## 운영 워크플로우
+
+```
+[x] M2 로컬 — 카탈로그 생성, scaler, floor/oracle sanity
+[x] M2 로컬 — round --phase equivalence
+[x] Kaggle CUDA — round --phase train
+[x] M2 로컬 — 결과 회수, 분석, 문서화
+```
+
+표준 round 스크립트는 `--phase {equivalence,train,all}`을 지원한다.
+short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
+`acceptance: skipped_smoke`, `leak_triggered: null`로 기록한다.
+
+---
+
 ## 알려진 문제
 
 - 실제 benchmark 원본 데이터(system6, ZTF, SDSS J1226, TDC1 Rung 0/1)가 없어 MOCK/SKIP 검증만 수행됨.
@@ -174,13 +189,17 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
   (`tests/test_corrector.py` 6개, `tests/test_encoders.py` 2개), Category B 11개는
   legacy mock HDF5 schema 의존(`tests/test_dataset.py` 7개, `tests/test_trainer.py` 4개).
   Category C(Phase 4 v0.1 즉시 수정 필요)는 0개.
+- Kaggle T4 2-epoch sanity에서 수렴 전 모델에 acceptance/leak trigger가 발동하는
+  false-positive가 확인되어 round phase 분리 및 acceptance epoch gate를 도입했다.
+  같은 sanity에서 `scheduler.step()` warning과 seed=1337 CUDA epoch1 `train=nan`
+  1회가 관측되어 NaN 진단 로그만 추가했다. hyperparameter tuning은 하지 않는다.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 v0.1 카탈로그로 ML 재학습 라운드 수행
+2. Phase 4 v0.1 카탈로그로 `--phase train` Kaggle CUDA 재학습 라운드 수행
 3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
 5. Phase 5는 Phase 4 HDF5로 smoke training 후 정식 재학습 파이프라인으로 교체

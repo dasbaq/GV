@@ -18,6 +18,13 @@
 **충돌 감지**
 - 요청이 STATUS.md의 현재 Phase와 충돌 → 작업 전 먼저 알릴 것
 - 구조 변경 필요 → ARCHITECTURE.md 읽고 확인 후 작업
+- ML 라운드 진입 요청이면 먼저 실행 환경을 명시:
+  - 시뮬레이션/카탈로그/scaler/floor 분석은 M2 로컬
+  - equivalence 검증은 M2 로컬에서 `--phase equivalence`
+  - GPU 학습 + bootstrap 평가는 Kaggle CUDA
+    (`--phase train`, smoke run은 acceptance/leak 판정 skip)
+  - checkpoint/log 회수 및 문서화는 M2 로컬
+  환경이 맞지 않으면 실행 대신 필요한 명령과 산출물 경로를 보고할 것.
 
 **코드 작성**
 - 물리 상수 → config/physics.yaml 에서만
