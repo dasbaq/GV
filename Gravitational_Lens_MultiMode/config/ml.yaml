@@ -43,4 +43,4 @@ training:
     ssim: 0.1
   amp: true
 
-seed: 42
+seed: 1337
