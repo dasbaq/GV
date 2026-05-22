@@ -4,6 +4,47 @@
 
 ---
 
+## [2026-05-22] Phase 4 v0.3.1 label/input validity split
+
+### 결정
+Phase 4 v0.3.1은 v0.3의 H0-neutral 10-bin stratified quota를 유지하고, validity gate를
+label 의존 컷과 입력/관측측 컷으로 분리한다.
+
+| 컷 | 분류 | v0.3.1 처리 | 근거 |
+|---|---|---|---|
+| `H0_approx in [45,90]` | label 의존 | 제외 | approximate target-side H0에 직접 의존하며 v0.2의 가장 큰 H0 왜곡 driver |
+| `abs(mode1_H0_correction) <= 32.27` | label 의존 | 제외 | correction = `H0_true - H0_approx` label 자체를 threshold |
+| `max(abs(F_joint)) <= 3.408` | 입력/관측측 | 복원 | LC input tensor magnitude의 AMP/fp16 overflow 방지 |
+| `I_obs.sum <= 77.79` | 입력/관측측 | 복원 | image input total flux tail 안정화 |
+| `dt_approx <= 444.7` | 입력/관측측 | 복원 | ML param input tail 안정화 |
+| `abs(mu_truth) <= 0.9699` | 입력/관측측 | 복원 | `|mu| < 1` 안정 조건의 p99 tail |
+| `dphi_sie/dphi_truth in [0.5878,0.9201]` | 입력/관측측, label 상관 risk | 복원 후 별도 진단 | H0 uniformity는 유지하지만 correction/dphi support를 좁힘 |
+| truth image separation `>= 0.6598 arcsec` | 입력/관측측 | 복원 | image/ray support tail 안정화 |
+
+### 결과
+- `data/mock/phase4_v0_3_1.h5`: n=500, seed=42, H0 bin별 50개.
+- filtered H0 KS vs U[60,80] p `0.999993`로 v0.3 p `0.984` 수준 유지.
+- NaN precheck는 v0.2 입력 안전범위 안: max|F_joint| `3.347`, I_obs.sum `69.03`,
+  dt_approx `443.89`, |mu|max `0.969895`, dphi_ratio `[0.58875,0.92007]`,
+  separation min `0.66384`; correction max도 reference `32.27` 안의 `32.261`.
+- dphi band ablation: input-tail mask에서 dphi band 포함 시 H0 KS p `0.0935`,
+  dphi 제외 시 p `0.0305`; 하지만 correction max는 dphi 제외 시 `69.34`까지 복귀한다.
+  따라서 이번 round는 NaN 안정성을 우선하고, correction/dphi support mismatch는 Kaggle train
+  acceptance와 unfiltered eval에서 별도 판정한다.
+
+### 운영 규칙
+- 모델 구조, 입력 차원, loss, optimizer, batch size, AMP 정책은 v0.3에서 변경하지 않는다.
+- NaN이 재발하면 `F_joint` 정규화, NLL variance floor, AMP disable/guard 등은 별도 acceptance가
+  필요한 제안으로만 다루고 v0.3.1 round에서는 실행하지 않는다.
+- selection-bias acceptance는 `unfiltered/filtered RMSE <= 2.5`, 1σ coverage target `[0.62,0.78]`를 유지한다.
+
+### 관련 파일
+- `ml/data/error_catalog.py`
+- `scripts/analyze_phase4_v0_2_selection_bias.py`
+- `scripts/phase4_v0_3_1_round.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_3_1_floor_analysis.json`
+
 ## [2026-05-22] Phase 4 v0.3 H0-neutral validity filter
 
 ### 결정

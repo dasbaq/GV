@@ -3,6 +3,25 @@
 
 ---
 
+## [2026-05-22] — Phase 4 v0.3.1 equivalence handoff + Kaggle staging + prompt
+- `data/logs/phase4_v0_3_1_equivalence.json` 생성(`--phase equivalence --device mps --epochs 1`): forward max diff `1.043e-07`(<1e-4), distribution Welch p `0.9908`, `passed=true`. Kaggle `--phase train`의 `--equivalence-from` 입력.
+- `python scripts/sync_to_kaggle.py --round phase4_v0_3_1 ... ` dry-run에서 train h5/unfiltered eval h5/scaler/equivalence json/floor json 5개 포함, missing 0 확인.
+- Kaggle Dataset 업로드용 input 폴더 `data/kaggle_upload/lens-phase4-v0-3-1/`(git ignored) 생성: 위 5개 파일 + `dataset-metadata.json`(`donghyun51/lens-phase4-v0-3-1`). `kaggle datasets create -p <folder>`로 업로드 가능.
+- `prompts/phase4_v0_3_1.md`: v0.3.1 Codex 프롬프트 + 실행 결과 + Kaggle 학습 명령 문서화.
+
+## [2026-05-22] — Phase 4 v0.3.1 input-tail validity filter
+- `ml/data/error_catalog.py`: `validity_filter="v0_3_1"` 추가. v0.3 H0 10-bin stratified quota는 유지하고 label-dependent `H0_approx`/`mode1_H0_correction` gate는 계속 제외하되, v0.2 입력측 tail gate(`F_joint`, `I_obs.sum`, `dt_approx`, `|mu|`, `dphi_ratio`, separation)만 복원.
+- `data/mock/phase4_v0_3_1.h5`: n=500, seed=42, H0 bin별 50개. filtered H0 KS vs U[60,80] p `0.999993`; v0.2 안전범위 precheck는 `max|F_joint|=3.347<=3.408`, `I_obs.sum=69.03<=77.79`, `dt_approx=443.89<=444.7`, `|mu|max=0.969895<=0.9699`, `dphi_ratio=[0.58875,0.92007]`, separation min `0.66384>=0.6598`, correction max `32.261<=32.27`.
+- `data/mock/phase4_v0_3_1_eval_unfiltered.h5`, `data/logs/phase4_v0_3_1_{label_distribution,floor_analysis,selection_bias_analysis}.json`, `data/target_scaler_phase4_v0_3_1.pkl` 생성. filtered/unfiltered KS p: H0 `0.144`, correction `0.0`, dphi_ratio `0.0`, mu `0.0265`, separation `0.0`; dphi band는 H0 uniformity를 유지하지만 correction/dphi support를 좁히는 잔여 risk로 기록.
+- `scripts/phase4_v0_3_1_round.py`: v0.3 round와 동일한 모델/입력/loss/optimizer/batch/AMP 정책을 artifact 이름만 바꿔 복제. selection-bias acceptance ratio `<=2.5`, coverage target `[0.62,0.78]` 유지.
+
+## [2026-05-22] — Phase 4 v0.3 Kaggle 학습 NaN 붕괴 + 결과 회수
+- Kaggle 산출물 회수(`data/`, `data_workers0/` 두 변형 동일): `data/checkpoints/phase4_v0_3_imgres_best.pt`, `data/logs/phase4_v0_3_imgres_h0_eval{,_unfiltered}.json`, `phase4_v0_3_imgres_long_history.json`, `phase4_v0_3_infra_equivalence.json`.
+- v0.3 학습은 epoch1부터 NaN으로 붕괴: train nan_batches epoch1 `25`/epoch2 `42`+val `3`, epoch2 train·val 모두 nan, grad_norm `2.29→5.57`. num_workers `4`/`0` 두 변형이 batch 단위까지 bit-identical NaN → 결정적 수치 overflow(데이터로더 비결정성 아님).
+- best checkpoint는 nan-collapse된 epoch2라 eval(filtered RMSE `10.6`, r `0.30`)은 무의미. acceptance 불가.
+- 원인: v0.3이 label 의존 gate(`H0_approx∈[45,90]`, `correction absmax`)뿐 아니라 v0.2의 입력측 수치안정 tail gate(`max|F_joint|`, `I_obs.sum`, `dt_approx`, `|mu|`, `dphi_ratio`)까지 제거 → 극단 입력 복귀로 AMP/fp16 overflow.
+- 결론(STATUS·DECISIONS 후보): validity 컷을 label 의존(bias 원인, 계속 제외)과 입력/관측측(수치안정, 복원)으로 분리. v0.3.1 = v0.3 stratified quota 유지 + 입력측 tail gate만 v0.2 임계로 복원.
+
 ## [2026-05-22] — Phase 4 v0.3 H0-neutral catalog filter
 - `ml/data/error_catalog.py`: `validity_filter="v0_3"` 추가. label-dependent `H0_approx`/correction gates와 v0.2 support-tail gates를 제거하고 root/finite/`dt_true>0`/`|mu|<0.98`/physical separation만 유지한 뒤 H0 10-bin stratified quota를 적용.
 - `data/mock/phase4_v0_3.h5`: n=500, seed=42, H0 bins 50개씩. filtered H0 KS vs U[60,80] p `0.984`로 v0.2 p `1.8e-6` 대비 개선.

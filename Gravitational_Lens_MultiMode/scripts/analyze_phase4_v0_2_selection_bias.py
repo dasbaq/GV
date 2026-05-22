@@ -104,6 +104,59 @@ def cut_masks(cat: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     }
 
 
+def cut_classification_rows() -> list[dict[str, str]]:
+    return [
+        {
+            "cut": "H0_approx_45_90_v0_1",
+            "class": "A_label_dependent",
+            "v0_3_1_action": "exclude",
+            "basis": "Uses approximate target-side H0; previous analysis identified it as the strongest robust H0 distortion.",
+        },
+        {
+            "cut": "correction_abs_le_32p27_v0_2",
+            "class": "A_label_dependent",
+            "v0_3_1_action": "exclude",
+            "basis": "Directly thresholds correction = H0_true - H0_approx, the Mode 1 label.",
+        },
+        {
+            "cut": "F_joint_absmax_le_3p408_v0_2",
+            "class": "B_input_observed",
+            "v0_3_1_action": "restore",
+            "basis": "Thresholds the light-curve input tensor magnitude that can overflow AMP/fp16.",
+        },
+        {
+            "cut": "I_obs_sum_le_77p79_v0_2",
+            "class": "B_input_observed",
+            "v0_3_1_action": "restore",
+            "basis": "Thresholds the observed image input total flux.",
+        },
+        {
+            "cut": "dt_approx_le_444p7_v0_2",
+            "class": "B_input_observed",
+            "v0_3_1_action": "restore",
+            "basis": "Thresholds the standard-approximation delay feature supplied to ML.",
+        },
+        {
+            "cut": "mu_abs_le_0p9699_v0_2",
+            "class": "B_input_observed",
+            "v0_3_1_action": "restore",
+            "basis": "Thresholds magnification-ratio input/observable support and preserves |mu| < 1.",
+        },
+        {
+            "cut": "dphi_ratio_0p5878_0p9201_v0_2",
+            "class": "B_input_observed_with_label_correlation_risk",
+            "v0_3_1_action": "restore_then_ablate",
+            "basis": "Uses Fermat-potential ratio/input-side support, but can correlate with correction and is measured separately.",
+        },
+        {
+            "cut": "separation_ge_0p6598_v0_2",
+            "class": "B_input_observed",
+            "v0_3_1_action": "restore",
+            "basis": "Thresholds truth image separation used to form ray-path/image support, not the correction label.",
+        },
+    ]
+
+
 def ks_uniform_h0(h0: np.ndarray) -> dict[str, float]:
     if h0.size == 0:
         return {"statistic": float("nan"), "pvalue": float("nan")}
@@ -148,6 +201,80 @@ def h0_cut_row(name: str, mask: np.ndarray, h0: np.ndarray) -> dict[str, Any]:
 def distribution_summary(cat: dict[str, np.ndarray], mask: np.ndarray) -> dict[str, Any]:
     keys = ["H0_true", "correction", "mu", "dphi_ratio", "separation", "dt_approx", "I_obs_sum", "F_joint_absmax"]
     return {key: summarize_values(cat[key][mask]) for key in keys}
+
+
+def percentile_summary(values: np.ndarray, percentiles: tuple[float, ...] = (50.0, 90.0, 95.0, 99.0)) -> dict[str, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    out = summarize_values(arr)
+    for p in percentiles:
+        out[f"p{p:g}"] = float(np.percentile(arr, p))
+    return out
+
+
+def tail_safety_summary(cat: dict[str, np.ndarray]) -> dict[str, Any]:
+    checks = {
+        "F_joint_absmax": (cat["F_joint_absmax"], ec.TRUTH_V0_2_F_JOINT_ABSMAX_MAX, "max_le"),
+        "I_obs_sum": (cat["I_obs_sum"], ec.TRUTH_V0_2_I_OBS_SUM_MAX, "max_le"),
+        "dt_approx": (cat["dt_approx"], ec.TRUTH_V0_2_DT_APPROX_MAX_DAYS, "max_le"),
+        "mu_abs": (np.abs(cat["mu"]), ec.TRUTH_V0_2_MU_MAX, "max_le"),
+        "correction_abs": (np.abs(cat["correction"]), ec.TRUTH_V0_2_MODE1_CORRECTION_ABSMAX, "reference_only"),
+        "dphi_ratio": (cat["dphi_ratio"], ec.TRUTH_V0_2_DPHI_RATIO_RANGE, "range"),
+        "separation": (cat["separation"], ec.TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC, "min_ge"),
+    }
+    rows: dict[str, Any] = {}
+    for key, (values, threshold, kind) in checks.items():
+        vals = np.asarray(values, dtype=np.float64)
+        row = percentile_summary(vals)
+        row["threshold"] = threshold
+        row["check"] = kind
+        if kind == "max_le":
+            row["within_v0_2_safe_range"] = bool(np.max(vals) <= float(threshold) + 1.0e-9)
+        elif kind == "min_ge":
+            row["within_v0_2_safe_range"] = bool(np.min(vals) >= float(threshold) - 1.0e-9)
+        elif kind == "range":
+            low, high = threshold
+            row["within_v0_2_safe_range"] = bool(np.min(vals) >= low - 1.0e-9 and np.max(vals) <= high + 1.0e-9)
+        else:
+            row["within_v0_2_safe_range"] = bool(np.max(vals) <= float(threshold) + 1.0e-9)
+            row["note"] = "Not applied as a v0.3.1 gate; reported against v0.2 reference only."
+        rows[key] = row
+    return rows
+
+
+def dphi_ablation_summary(cat: dict[str, np.ndarray], masks: dict[str, np.ndarray], input_names: list[str]) -> dict[str, Any]:
+    full = np.logical_and.reduce([masks[name] for name in input_names])
+    without_dphi_names = [name for name in input_names if name != "dphi_ratio_0p5878_0p9201_v0_2"]
+    without_dphi = np.logical_and.reduce([masks[name] for name in without_dphi_names])
+    dphi_only = masks["dphi_ratio_0p5878_0p9201_v0_2"]
+    h0 = cat["H0_true"]
+    corr = cat["correction"]
+
+    def _row(name: str, mask: np.ndarray) -> dict[str, Any]:
+        h0_ks = ks_uniform_h0(h0[mask])
+        corr_ks = stats.ks_2samp(corr[mask], corr) if mask.any() else None
+        h0_kept_removed = stats.ks_2samp(h0[mask], h0[~mask]) if mask.any() and (~mask).any() else None
+        return {
+            "mask": name,
+            "n_kept": int(mask.sum()),
+            "keep_rate": float(mask.mean()),
+            "H0_vs_U_60_80_KS": h0_ks,
+            "correction_vs_unfiltered_KS": None
+            if corr_ks is None
+            else {"statistic": float(corr_ks.statistic), "pvalue": float(corr_ks.pvalue)},
+            "H0_kept_removed_KS": None
+            if h0_kept_removed is None
+            else {"statistic": float(h0_kept_removed.statistic), "pvalue": float(h0_kept_removed.pvalue)},
+            "H0": summarize_values(h0[mask]),
+            "correction": summarize_values(corr[mask]),
+        }
+
+    return {
+        "decision_rule": (
+            "If the dphi band materially degrades H0 uniform KS or correction KS relative to the "
+            "same input-tail mask without dphi, widen or exclude it before training."
+        ),
+        "rows": [_row("input_tail_all_with_dphi", full), _row("input_tail_without_dphi", without_dphi), _row("dphi_band_only", dphi_only)],
+    }
 
 
 def metric_rows(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
@@ -436,8 +563,21 @@ def main() -> None:
         "I_obs_sum_le_77p79_v0_2",
         "F_joint_absmax_le_3p408_v0_2",
     ]
+    v0_3_1_input_names = [
+        "finite",
+        "dt_true_positive",
+        "mu_abs_lt_0p98_v0_1",
+        "separation_ge_0p1_v0_1",
+        "mu_abs_le_0p9699_v0_2",
+        "separation_ge_0p6598_v0_2",
+        "dphi_ratio_0p5878_0p9201_v0_2",
+        "dt_approx_le_444p7_v0_2",
+        "I_obs_sum_le_77p79_v0_2",
+        "F_joint_absmax_le_3p408_v0_2",
+    ]
     v0_1_mask = np.logical_and.reduce([masks[name] for name in v0_1_names])
     v0_2_mask = np.logical_and.reduce([masks[name] for name in v0_2_names])
+    v0_3_1_input_mask = np.logical_and.reduce([masks[name] for name in v0_3_1_input_names])
 
     h0 = unfiltered["H0_true"]
     individual_rows = [h0_cut_row(name, masks[name], h0) for name in v0_2_names]
@@ -473,24 +613,32 @@ def main() -> None:
             "unfiltered_n": int(h0.size),
             "unfiltered_v0_1_kept_n": int(v0_1_mask.sum()),
             "unfiltered_v0_2_kept_n": int(v0_2_mask.sum()),
+            "unfiltered_v0_3_1_input_tail_kept_n": int(v0_3_1_input_mask.sum()),
             "filtered_n": int(filtered["H0_true"].size),
         },
+        "cut_classification": cut_classification_rows(),
         "distribution_before_after": {
             "unfiltered_all": distribution_summary(unfiltered, np.ones_like(h0, dtype=bool)),
             "unfiltered_v0_1_mask": distribution_summary(unfiltered, v0_1_mask),
             "unfiltered_v0_2_mask": distribution_summary(unfiltered, v0_2_mask),
+            "unfiltered_v0_3_1_input_tail_mask": distribution_summary(unfiltered, v0_3_1_input_mask),
             "filtered_catalog": distribution_summary(filtered, np.ones_like(filtered["H0_true"], dtype=bool)),
         },
         "H0_KS_against_U_60_80": {
             "unfiltered_all": ks_uniform_h0(h0),
             "unfiltered_v0_1_mask": ks_uniform_h0(h0[v0_1_mask]),
             "unfiltered_v0_2_mask": ks_uniform_h0(h0[v0_2_mask]),
+            "unfiltered_v0_3_1_input_tail_mask": ks_uniform_h0(h0[v0_3_1_input_mask]),
             "filtered_catalog": ks_uniform_h0(filtered["H0_true"]),
         },
         "cut_distortion_individual": individual_rows,
         "cut_distortion_ranked": ranked,
         "sequential_v0_2": sequential_cut_table(masks, h0, v0_2_names),
         "leave_one_out_v0_2": leave_one_out_table(masks, h0, v0_2_names),
+        "sequential_v0_3_1_input_tail": sequential_cut_table(masks, h0, v0_3_1_input_names),
+        "leave_one_out_v0_3_1_input_tail": leave_one_out_table(masks, h0, v0_3_1_input_names),
+        "dphi_ratio_ablation": dphi_ablation_summary(unfiltered, masks, v0_3_1_input_names),
+        "nan_input_tail_safety_filtered": tail_safety_summary(filtered),
         "H0_feature_correlations_unfiltered": correlations,
         "filtered_unfiltered_distribution_match": distribution_match_rows(filtered, unfiltered),
         "baselines": {
@@ -570,6 +718,7 @@ def main() -> None:
             "catalog_path": str(args.filtered),
             "eval_unfiltered_path": str(args.unfiltered),
             "mode1_H0_correction": result["distribution_before_after"]["filtered_catalog"]["correction"],
+            "nan_input_tail_safety_filtered": result["nan_input_tail_safety_filtered"],
             "H0_KS_against_U_60_80": result["H0_KS_against_U_60_80"]["filtered_catalog"],
             "filtered_unfiltered_distribution_match": result["filtered_unfiltered_distribution_match"],
             "baselines": result["baselines"],

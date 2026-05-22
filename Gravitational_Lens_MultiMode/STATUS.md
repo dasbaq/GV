@@ -247,15 +247,43 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   separation `0.351`이다. `data/logs/phase4_v0_3_floor_analysis.json`에
   no-correction/oracle baseline과 selection-bias acceptance 사전 기준
   (`unfiltered/filtered RMSE <= 2.5`, coverage `[0.62,0.78]`)을 고정했다.
+- Phase 4 v0.3 Kaggle full run은 학습이 epoch1부터 NaN으로 붕괴해 acceptance 불가다.
+  train nan_batches epoch1 `25`, epoch2 `42` + val `3`, epoch2에서 train/val 모두 nan,
+  grad_norm `2.29 -> 5.57`. num_workers `4`/`0` 두 변형이 batch 단위까지 bit-identical하게
+  NaN → dataloader 비결정성이 아니라 결정적 수치 overflow다. best checkpoint는 nan-collapse된
+  epoch2라 eval 수치(filtered RMSE `10.6`, r `0.30`)는 무의미하다. 원인: v0.3이 label 의존
+  gate뿐 아니라 v0.2의 입력측 수치안정 tail gate(`max|F_joint|<=3.408`, `I_obs.sum<=77.79`,
+  `dt_approx<=444.7`, `|mu|<=0.9699`, `dphi_ratio` band)까지 함께 제거 → 극단 입력 복귀로
+  AMP/fp16 overflow. Kaggle 산출물(`data/`, `data_workers0/` 두 변형 동일)을 repo로 회수:
+  `data/checkpoints/phase4_v0_3_imgres_best.pt`,
+  `data/logs/phase4_v0_3_imgres_h0_eval{,_unfiltered}.json`,
+  `phase4_v0_3_imgres_long_history.json`, `phase4_v0_3_infra_equivalence.json` (git ignored).
+- bias↔NaN 트레이드오프 결론: validity 컷을 label 의존(H0_approx/correction, bias 원인 — 계속 제외)
+  과 입력/관측측(F_joint/I_obs/dt_approx/mu/dphi_ratio, 수치안정용 — 복원)으로 분리해야 한다.
+  v0.3.1은 v0.3 stratified quota를 유지하되 입력측 tail gate만 v0.2 임계로 복원한다.
+- Phase 4 v0.3.1 catalog filter를 M2 로컬에서 구현/생성했다.
+  v0.3.1은 v0.3 H0 `[60,80]` 10-bin quota를 유지하고 label-dependent
+  `H0_approx`/correction gate는 제외하며, v0.2 입력측 tail gate
+  (`max|F_joint|<=3.408`, `I_obs.sum<=77.79`, `dt_approx<=444.7`,
+  `|mu|<=0.9699`, `dphi_ratio in [0.5878,0.9201]`, separation `>=0.6598`)만 복원한다.
+  `data/mock/phase4_v0_3_1.h5`는 n=500, seed=42, bin별 50개이며 filtered H0 KS vs
+  U[60,80] p `0.999993`로 v0.3 p `0.984` 수준을 유지/개선했다.
+  NaN 사전점검은 v0.2 안전범위 안이다: max|F_joint| `3.347`, I_obs.sum `69.03`,
+  dt_approx `443.89`, |mu|max `0.969895`, dphi_ratio `[0.58875,0.92007]`,
+  separation min `0.66384`, correction max `32.261`.
+  다만 filtered/unfiltered KS p는 H0 `0.144`로 유지됐지만 correction/dphi_ratio/separation은
+  `0.0`, mu `0.0265`로 v0.3보다 악화됐다. dphi band ablation에서 band 제외 시 correction
+  support는 개선되지만 correction max가 `69.34`까지 복귀해 이번 round는 NaN 안전을 우선한다.
+  AMP/loss 측 수치 가드(`F_joint` 정규화 재검토, NLL variance floor 등)는 acceptance 필요 제안으로만 보류한다.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 v0.3 Dataset dry-run은 완료됐으므로, 필요 시
-   `python scripts/sync_to_kaggle.py --round phase4_v0_3 --init-dataset --slug lens-phase4-v0-3 --execute`
-   로 Kaggle Dataset 업로드 후 Kaggle CUDA에서 `scripts/phase4_v0_3_round.py --phase train` 수행.
+2. Kaggle CUDA에서 Phase 4 v0.3.1 full train을 수행한다:
+   `python scripts/phase4_v0_3_1_round.py --phase train --equivalence-from /kaggle/input/<slug>/phase4_v0_3_1_equivalence.json --device cuda --workers 4 --epochs 50 --bootstrap-n 1000`.
+   acceptance 사전 기준은 selection-bias ratio `<=2.5`, 1σ coverage `[0.62,0.78]`이다.
 3. Phase 4 v0.3에서 coverage 개선은 NLL/calibration 문제로 별도 점검한다
    (filtered validation뿐 아니라 unfiltered/cut-boundary bin별 residual/sigma 검증).
 4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토

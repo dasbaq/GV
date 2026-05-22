@@ -558,8 +558,8 @@ def _distribution(values: np.ndarray) -> dict[str, float]:
 
 def _validity_mode(config: CatalogConfig) -> str:
     mode = str(config.validity_filter)
-    if mode not in {"v0_3", "v0_2", "v0_1", "off"}:
-        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_3, v0_2, v0_1, or off.")
+    if mode not in {"v0_3_1", "v0_3", "v0_2", "v0_1", "off"}:
+        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_3_1, v0_3, v0_2, v0_1, or off.")
     if mode == "v0_2" and not (config.include_nfw or config.include_kappa_ext):
         return "v0_1"
     return mode
@@ -586,14 +586,16 @@ def _validity_reject_reason(
     Units: delays [days], H0 [km/s/Mpc], image separation [arcsec].
     ``v0_3`` keeps only H0-neutral physical validity checks here; its H0
     distribution matching is handled by stratified quota in pair collection.
-    ``v0_1`` retains the legacy H0_approx/dphi gates, and ``v0_2`` composes
-    CUDA-stability p99 filters after those legacy checks.
+    ``v0_3_1`` keeps the same H0-neutral quota but restores only input-side
+    v0.2 CUDA-stability p99 filters. ``v0_1`` retains the legacy
+    H0_approx/dphi gates, and ``v0_2`` composes CUDA-stability p99 filters
+    after those legacy checks.
     """
 
     mode = validity_filter
     if mode is None:
         mode = "v0_2" if apply_v0_2_filters else "v0_1"
-    if mode not in {"v0_3", "v0_2", "v0_1"}:
+    if mode not in {"v0_3_1", "v0_3", "v0_2", "v0_1"}:
         raise ValueError(f"Unsupported validity_filter={mode!r}")
     if not (np.isfinite(dt_true) and np.isfinite(h0_approx) and np.isfinite(phi_truth) and np.isfinite(phi_sie)):
         return "nonfinite_values"
@@ -604,6 +606,20 @@ def _validity_reject_reason(
     if separation_truth < TRUTH_MIN_IMAGE_SEPARATION_ARCSEC:
         return "image_separation_lt_0p1"
     if mode == "v0_3":
+        return None
+    if mode == "v0_3_1":
+        if abs(mu_truth) > TRUTH_V0_2_MU_MAX:
+            return "mu_truth_gt_v0_2_p99"
+        if separation_truth < TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC:
+            return "image_separation_lt_v0_2_p01"
+        if not (TRUTH_V0_2_DPHI_RATIO_RANGE[0] <= dphi_ratio <= TRUTH_V0_2_DPHI_RATIO_RANGE[1]):
+            return "dphi_ratio_outside_v0_2_p01_p99"
+        if dt_approx > TRUTH_V0_2_DT_APPROX_MAX_DAYS:
+            return "dt_approx_gt_v0_2_p99"
+        if i_obs_sum is not None and i_obs_sum > TRUTH_V0_2_I_OBS_SUM_MAX:
+            return "image_sum_gt_v0_2_p99"
+        if f_joint_absmax is not None and f_joint_absmax > TRUTH_V0_2_F_JOINT_ABSMAX_MAX:
+            return "lc_absmax_gt_v0_2_p99"
         return None
     if not (TRUTH_H0_APPROX_RANGE[0] <= h0_approx <= TRUTH_H0_APPROX_RANGE[1]):
         return "H0_approx_outside_45_90"
@@ -641,6 +657,8 @@ def _default_log_paths(output_path: Path, config: CatalogConfig) -> tuple[Path, 
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_2_label_distribution.json"
     elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_3.h5").resolve():
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_3_label_distribution.json"
+    elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_3_1.h5").resolve():
+        log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_3_1_label_distribution.json"
     else:
         log_path = output_path.with_suffix(".label_distribution.json")
     reject_path = (
@@ -696,6 +714,25 @@ def _empty_reject_log(config: CatalogConfig) -> dict[str, Any]:
             ],
             "h0_stratified_range": TRUTH_V0_3_H0_STRATIFIED_RANGE,
             "h0_stratified_bins": TRUTH_V0_3_H0_STRATIFIED_BINS,
+        },
+        "v0_3_1_policy": {
+            "validity": (
+                "v0_3 H0-neutral physical checks plus v0_2 input-side tail gates; "
+                "label-dependent H0_approx/correction gates remain removed"
+            ),
+            "kept_h0_neutral_quota_from": "v0_3",
+            "restored_input_tail_gates": [
+                "mu_truth_gt_v0_2_p99",
+                "image_separation_lt_v0_2_p01",
+                "dphi_ratio_outside_v0_2_p01_p99",
+                "dt_approx_gt_v0_2_p99",
+                "image_sum_gt_v0_2_p99",
+                "lc_absmax_gt_v0_2_p99",
+            ],
+            "excluded_label_dependent_gates": [
+                "H0_approx_outside_45_90",
+                "mode1_correction_abs_gt_v0_2_p99",
+            ],
         },
         "dedupe_arcsec": TRUTH_IMAGE_DEDUPE_ARCSEC,
         "residual_arcsec_threshold": TRUTH_ROOT_RESIDUAL_ARCSEC,
@@ -786,6 +823,7 @@ def _collect_valid_pairs_stratified(
     pairs: list[dict[str, Any]] = []
     bases: list[dict[str, Any]] = []
     reject_log = _empty_reject_log(config)
+    validity_mode = _validity_mode(config)
     quotas = _h0_bin_quotas(config.n_systems)
     counts = np.zeros_like(quotas)
     max_attempts = config.n_systems * _resample_budget(config)
@@ -806,7 +844,7 @@ def _collect_valid_pairs_stratified(
         if not pair.get("valid"):
             _record_reject(reject_log, str(pair.get("reject_reason", "unknown")))
             continue
-        if not _attach_light_curve(pair, config, lc_rng, reject_log, "v0_3"):
+        if not _attach_light_curve(pair, config, lc_rng, reject_log, validity_mode):
             continue
         bases.append(base)
         pairs.append(pair)
@@ -816,7 +854,7 @@ def _collect_valid_pairs_stratified(
     if len(pairs) < config.n_systems:
         reject_log["n_achieved"] = len(pairs)
         raise RuntimeError(
-            f"Phase 4 v0.3 stratified resample budget exceeded; "
+            f"Phase 4 {validity_mode} stratified resample budget exceeded; "
             f"n_systems_target={config.n_systems}, n_achieved={len(pairs)}, "
             f"h0_bin_counts={counts.tolist()}, h0_bin_quotas={quotas.tolist()}"
         )
@@ -844,7 +882,7 @@ def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], l
     rng = np.random.default_rng(config.seed)
     lc_rng = np.random.default_rng(config.seed + 1000)
     validity_mode = _validity_mode(config)
-    if validity_mode == "v0_3":
+    if validity_mode in {"v0_3", "v0_3_1"}:
         return _collect_valid_pairs_stratified(config)
     pairs: list[dict[str, Any]] = []
     bases: list[dict[str, Any]] = []
@@ -968,7 +1006,13 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["n_systems"] = n
         meta.attrs["random_seed"] = config.seed
         meta.attrs["full_truth_available"] = True
-        meta.attrs["generator_version"] = "phase4-v0.3" if validity_mode == "v0_3" else "phase4-v0.2"
+        meta.attrs["generator_version"] = (
+            "phase4-v0.3.1"
+            if validity_mode == "v0_3_1"
+            else "phase4-v0.3"
+            if validity_mode == "v0_3"
+            else "phase4-v0.2"
+        )
         meta.attrs["truth_model"] = config.truth_model
         meta.attrs["validity_filter"] = (
             "off_for_eval; root convergence required" if validity_mode == "off" else validity_mode
@@ -991,10 +1035,12 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["v0_2_I_obs_sum_max"] = TRUTH_V0_2_I_OBS_SUM_MAX
         meta.attrs["v0_2_F_joint_absmax_max"] = TRUTH_V0_2_F_JOINT_ABSMAX_MAX
         meta.attrs["v0_2_mode1_H0_correction_absmax"] = TRUTH_V0_2_MODE1_CORRECTION_ABSMAX
-        meta.attrs["v0_3_h0_neutral_filter"] = validity_mode == "v0_3"
+        meta.attrs["v0_3_h0_neutral_filter"] = validity_mode in {"v0_3", "v0_3_1"}
         meta.attrs["v0_3_h0_stratified_min"] = TRUTH_V0_3_H0_STRATIFIED_RANGE[0]
         meta.attrs["v0_3_h0_stratified_max"] = TRUTH_V0_3_H0_STRATIFIED_RANGE[1]
         meta.attrs["v0_3_h0_stratified_bins"] = TRUTH_V0_3_H0_STRATIFIED_BINS
+        meta.attrs["v0_3_1_restores_input_tail_gates"] = validity_mode == "v0_3_1"
+        meta.attrs["v0_3_1_excludes_label_dependent_gates"] = validity_mode == "v0_3_1"
 
         params = f.create_group("params")
         for key in ("H0", "z_lens", "z_source", "sigma_v", "M200", "concentration", "q"):
@@ -1107,6 +1153,7 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
             "mode1_H0_correction_absmax": TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
         },
         "v0_3_policy": reject_log["v0_3_policy"],
+        "v0_3_1_policy": reject_log["v0_3_1_policy"],
         "image_shift_arcsec": _distribution(np.asarray([p["image_shift_arcsec"] for p in pairs], dtype=float)),
         "root_residual_norm": {
             "median": reject_log["root_residual_norm_median"],
@@ -1142,7 +1189,7 @@ def main() -> None:
     parser.add_argument("--reject-log-path", type=Path, default=None)
     parser.add_argument("--diagnosis-log-path", type=Path, default=None)
     parser.add_argument("--resample-budget", type=int, default=None)
-    parser.add_argument("--validity-filter", choices=("v0_3", "v0_2", "v0_1", "off"), default="v0_2")
+    parser.add_argument("--validity-filter", choices=("v0_3_1", "v0_3", "v0_2", "v0_1", "off"), default="v0_2")
     parser.add_argument("--eval-role", default=None)
     args = parser.parse_args()
     summary = build_phase4_catalog(
