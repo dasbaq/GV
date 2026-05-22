@@ -4,6 +4,52 @@
 
 ---
 
+## [2026-05-22] Phase 4 v0.3 H0-neutral validity filter
+
+### 결정
+Phase 4 v0.3 catalog validity filter는 H0/correction 값에 직접 의존하지 않는다.
+
+v0.3은 다음 물리/수치 validity만 generator-level reject 조건으로 유지한다.
+
+| 항목 | v0.3 기준 | 근거 |
+|---|---:|---|
+| truth image root solve | success + residual threshold | full-truth delay 계산의 최소 조건 |
+| finite values | `dt_true`, `H0_approx`, Fermat values finite | HDF5 label sanity |
+| `dt_true` | `> 0` | 시간 지연 물리 조건 |
+| `abs(mu_truth)` | `< 0.98` | `|mu| < 1` 수렴/안정 조건 |
+| truth image separation | `>= 0.1 arcsec` | image dedupe/분해능 최소 조건 |
+
+아래 v0.1/v0.2 조건은 v0.3 validity에서 제거한다.
+
+| 제거 조건 | 제거 이유 |
+|---|---|
+| `H0_approx in [45,90]` | v0.2 selection-bias 분석에서 가장 큰 robust H0 왜곡 driver |
+| `abs(mode1_H0_correction) <= 32.27` | label-dependent tail cut |
+| v0.2 dphi/dt/image/LC/separation p99/p01 tail gates | filtered catalog를 쉬운 support로 좁히는 selection bias |
+
+H0 분포 정합은 reject gate가 아니라 H0 `[60,80]` 10-bin stratified quota로 처리한다.
+
+### 결과
+- `data/mock/phase4_v0_3.h5`: n=500, seed=42, H0 bin별 50개.
+- `data/mock/phase4_v0_3_eval_unfiltered.h5`: n=200, seed=42, root convergence only.
+- filtered H0 KS vs U[60,80] p `0.984`로 v0.2 p `1.8e-6` 대비 개선.
+- filtered/unfiltered 1D KS p: H0 `0.144`, correction `0.801`, dphi_ratio `0.853`,
+  mu `0.685`, separation `0.351`.
+
+### 운영 규칙
+- 모델 구조, 입력 차원, loss, optimizer, batch size, AMP 정책은 변경하지 않는다.
+- 입력 feature 보강은 acceptance가 필요한 별도 제안으로만 다룬다.
+- selection-bias acceptance는 Kaggle CUDA train 전 사전 선언한다:
+  `unfiltered/filtered RMSE <= 2.5`, 1σ coverage target `[0.62, 0.78]`.
+- no-correction/oracle baseline은 같은 eval JSON 경로에 함께 기록한다.
+
+### 관련 파일
+- `ml/data/error_catalog.py`
+- `scripts/analyze_phase4_v0_2_selection_bias.py`
+- `scripts/phase4_v0_3_round.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_3_floor_analysis.json`
+
 ## [2026-05-22] Mode 1 Fermat potential unit convention
 
 ### 결정

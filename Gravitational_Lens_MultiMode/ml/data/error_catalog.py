@@ -12,6 +12,7 @@ from typing import Any
 
 import h5py
 import numpy as np
+import yaml
 
 from core.physics.config import constants, default_cosmology
 from core.physics.distances import angular_diameter_distance
@@ -40,6 +41,19 @@ TRUTH_V0_2_DT_APPROX_MAX_DAYS = 444.7
 TRUTH_V0_2_I_OBS_SUM_MAX = 77.79
 TRUTH_V0_2_F_JOINT_ABSMAX_MAX = 3.408
 TRUTH_V0_2_MODE1_CORRECTION_ABSMAX = 32.27
+
+
+def _phase4_v0_3_policy_from_config() -> tuple[tuple[float, float], int]:
+    with (PROJECT_ROOT / "config" / "ml.yaml").open("r", encoding="utf-8") as fp:
+        cfg = yaml.safe_load(fp)
+    policy = cfg["catalog"]["phase4_v0_3"]
+    h0_range = tuple(float(v) for v in policy["h0_stratified_range"])
+    if len(h0_range) != 2:
+        raise ValueError("catalog.phase4_v0_3.h0_stratified_range must have two values")
+    return (h0_range[0], h0_range[1]), int(policy["h0_stratified_bins"])
+
+
+TRUTH_V0_3_H0_STRATIFIED_RANGE, TRUTH_V0_3_H0_STRATIFIED_BINS = _phase4_v0_3_policy_from_config()
 DEFAULT_RESAMPLE_BUDGET = 50
 
 
@@ -479,6 +493,7 @@ def _compute_pair(
             dphi_ratio=dphi_ratio,
             i_obs_sum=float(np.sum(i_obs)),
             apply_v0_2_filters=validity_mode == "v0_2",
+            validity_filter=validity_mode,
         )
     if validate and invalid_reason is not None:
         return {
@@ -543,8 +558,8 @@ def _distribution(values: np.ndarray) -> dict[str, float]:
 
 def _validity_mode(config: CatalogConfig) -> str:
     mode = str(config.validity_filter)
-    if mode not in {"v0_2", "v0_1", "off"}:
-        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_2, v0_1, or off.")
+    if mode not in {"v0_3", "v0_2", "v0_1", "off"}:
+        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_3, v0_2, v0_1, or off.")
     if mode == "v0_2" and not (config.include_nfw or config.include_kappa_ext):
         return "v0_1"
     return mode
@@ -564,14 +579,22 @@ def _validity_reject_reason(
     i_obs_sum: float | None = None,
     f_joint_absmax: float | None = None,
     apply_v0_2_filters: bool = True,
+    validity_filter: str | None = None,
 ) -> str | None:
     """Return the first Phase 4 validity rejection reason, or ``None``.
 
-    Units: delays [days], H0 [km/s/Mpc], image separation [arcsec]. v0.1
-    generator validity remains intact, and v0.2 CUDA-stability p99 filters are
-    AND-composed after the v0.1 checks.
+    Units: delays [days], H0 [km/s/Mpc], image separation [arcsec].
+    ``v0_3`` keeps only H0-neutral physical validity checks here; its H0
+    distribution matching is handled by stratified quota in pair collection.
+    ``v0_1`` retains the legacy H0_approx/dphi gates, and ``v0_2`` composes
+    CUDA-stability p99 filters after those legacy checks.
     """
 
+    mode = validity_filter
+    if mode is None:
+        mode = "v0_2" if apply_v0_2_filters else "v0_1"
+    if mode not in {"v0_3", "v0_2", "v0_1"}:
+        raise ValueError(f"Unsupported validity_filter={mode!r}")
     if not (np.isfinite(dt_true) and np.isfinite(h0_approx) and np.isfinite(phi_truth) and np.isfinite(phi_sie)):
         return "nonfinite_values"
     if dt_true <= 0.0:
@@ -580,11 +603,13 @@ def _validity_reject_reason(
         return "mu_truth_ge_0p98"
     if separation_truth < TRUTH_MIN_IMAGE_SEPARATION_ARCSEC:
         return "image_separation_lt_0p1"
+    if mode == "v0_3":
+        return None
     if not (TRUTH_H0_APPROX_RANGE[0] <= h0_approx <= TRUTH_H0_APPROX_RANGE[1]):
         return "H0_approx_outside_45_90"
     if not (TRUTH_DPHI_RATIO_RANGE[0] <= dphi_ratio <= TRUTH_DPHI_RATIO_RANGE[1]):
         return "dphi_ratio_outside_0p5_1p5"
-    if not apply_v0_2_filters:
+    if mode != "v0_2":
         return None
 
     correction = float(h0_true) - float(h0_approx)
@@ -614,6 +639,8 @@ def _default_log_paths(output_path: Path, config: CatalogConfig) -> tuple[Path, 
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_1_label_distribution.json"
     elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_2.h5").resolve():
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_2_label_distribution.json"
+    elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_3.h5").resolve():
+        log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_3_label_distribution.json"
     else:
         log_path = output_path.with_suffix(".label_distribution.json")
     reject_path = (
@@ -652,6 +679,24 @@ def _empty_reject_log(config: CatalogConfig) -> dict[str, Any]:
             "F_joint_absmax_max": TRUTH_V0_2_F_JOINT_ABSMAX_MAX,
             "mode1_H0_correction_absmax": TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
         },
+        "v0_3_policy": {
+            "validity": "root/finite/dt_positive/mu_abs_lt_0p98/separation_ge_0p1",
+            "removed_label_dependent_gates": [
+                "H0_approx_outside_45_90",
+                "mode1_correction_abs_gt_v0_2_p99",
+            ],
+            "removed_support_tail_gates": [
+                "dphi_ratio_outside_0p5_1p5",
+                "dphi_ratio_outside_v0_2_p01_p99",
+                "dt_approx_gt_v0_2_p99",
+                "image_sum_gt_v0_2_p99",
+                "lc_absmax_gt_v0_2_p99",
+                "image_separation_lt_v0_2_p01",
+                "mu_truth_gt_v0_2_p99",
+            ],
+            "h0_stratified_range": TRUTH_V0_3_H0_STRATIFIED_RANGE,
+            "h0_stratified_bins": TRUTH_V0_3_H0_STRATIFIED_BINS,
+        },
         "dedupe_arcsec": TRUTH_IMAGE_DEDUPE_ARCSEC,
         "residual_arcsec_threshold": TRUTH_ROOT_RESIDUAL_ARCSEC,
         "condition_number_max": TRUTH_ROOT_COND_MAX,
@@ -668,10 +713,139 @@ def _record_reject(log: dict[str, Any], reason: str) -> None:
     counts[reason] = int(counts.get(reason, 0)) + 1
 
 
+def _h0_bin_index(h0: float) -> int:
+    low, high = TRUTH_V0_3_H0_STRATIFIED_RANGE
+    if not (low <= h0 <= high):
+        return -1
+    scaled = (h0 - low) / (high - low)
+    idx = int(np.floor(scaled * TRUTH_V0_3_H0_STRATIFIED_BINS))
+    return min(max(idx, 0), TRUTH_V0_3_H0_STRATIFIED_BINS - 1)
+
+
+def _h0_bin_quotas(n_systems: int) -> np.ndarray:
+    bins = TRUTH_V0_3_H0_STRATIFIED_BINS
+    quotas = np.full(bins, n_systems // bins, dtype=int)
+    quotas[: n_systems % bins] += 1
+    return quotas
+
+
+def _record_pair_diagnostics(reject_log: dict[str, Any], pair: dict[str, Any], attempt: int) -> None:
+    reject_log["attempts_per_accepted"].append(attempt)
+    sol = pair["truth_solution"]
+    reject_log["dedupe_count_total"] += int(sol.get("dedupe_count", 0))
+    reject_log["root_residual_norms"].extend(float(d["residual_norm"]) for d in sol.get("diagnostics", []))
+    reject_log["condition_numbers"].extend(float(d["condition_number"]) for d in sol.get("diagnostics", []))
+
+
+def _attach_light_curve(
+    pair: dict[str, Any],
+    config: CatalogConfig,
+    lc_rng: np.random.Generator,
+    reject_log: dict[str, Any],
+    validity_mode: str,
+) -> bool:
+    lc = QuasarLightCurve(seed=int(lc_rng.integers(0, 2**31 - 1))).generate(
+        n_epochs=config.n_epochs,
+        total_days=1000.0,
+        survey="ztf",
+    )
+    joint, noise = _joint_curve(lc["flux"], lc["flux_err"], lc["t_obs"], pair["dt_true"], pair["mu_true"])
+    sigma_curve = _sigma_curve(lc_rng, config.sigma_curve_size, pair["dt_true"])
+    lc_invalid_reason = None
+    if validity_mode != "off":
+        lc_invalid_reason = _validity_reject_reason(
+            dt_true=float(pair["dt_true"]),
+            dt_approx=float(pair["approx"].dt_approx),
+            h0_true=float(pair["H0_true"]),
+            h0_approx=float(pair["approx"].H0_approx),
+            phi_truth=float(pair["truth_fermat_potential"]),
+            phi_sie=float(pair["approx"].fermat_potential),
+            mu_truth=float(pair["mu_true"]),
+            separation_truth=float(pair["separation_truth"]),
+            dphi_ratio=float(pair["dphi_ratio"]),
+            i_obs_sum=float(np.sum(pair["I_obs"])),
+            f_joint_absmax=float(np.max(np.abs(joint))),
+            apply_v0_2_filters=validity_mode == "v0_2",
+            validity_filter=validity_mode,
+        )
+    if lc_invalid_reason is not None:
+        _record_reject(reject_log, lc_invalid_reason)
+        return False
+    pair["F_joint"] = joint
+    pair["sigma_noise"] = noise
+    pair["t_obs"] = lc["t_obs"]
+    pair["sigma_curve"] = sigma_curve
+    return True
+
+
+def _collect_valid_pairs_stratified(
+    config: CatalogConfig,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    rng = np.random.default_rng(config.seed)
+    lc_rng = np.random.default_rng(config.seed + 1000)
+    pairs: list[dict[str, Any]] = []
+    bases: list[dict[str, Any]] = []
+    reject_log = _empty_reject_log(config)
+    quotas = _h0_bin_quotas(config.n_systems)
+    counts = np.zeros_like(quotas)
+    max_attempts = config.n_systems * _resample_budget(config)
+    attempts_since_accept = 0
+    for _ in range(max_attempts):
+        if len(pairs) >= config.n_systems:
+            break
+        attempts_since_accept += 1
+        base = _sample_base_system(rng)
+        bin_idx = _h0_bin_index(float(base["H0"]))
+        if bin_idx < 0:
+            _record_reject(reject_log, "h0_outside_v0_3_stratified_range")
+            continue
+        if counts[bin_idx] >= quotas[bin_idx]:
+            _record_reject(reject_log, "h0_stratified_bin_full")
+            continue
+        pair = _compute_pair(base, config, config.include_nfw, config.include_kappa_ext, validate=True)
+        if not pair.get("valid"):
+            _record_reject(reject_log, str(pair.get("reject_reason", "unknown")))
+            continue
+        if not _attach_light_curve(pair, config, lc_rng, reject_log, "v0_3"):
+            continue
+        bases.append(base)
+        pairs.append(pair)
+        counts[bin_idx] += 1
+        _record_pair_diagnostics(reject_log, pair, attempts_since_accept)
+        attempts_since_accept = 0
+    if len(pairs) < config.n_systems:
+        reject_log["n_achieved"] = len(pairs)
+        raise RuntimeError(
+            f"Phase 4 v0.3 stratified resample budget exceeded; "
+            f"n_systems_target={config.n_systems}, n_achieved={len(pairs)}, "
+            f"h0_bin_counts={counts.tolist()}, h0_bin_quotas={quotas.tolist()}"
+        )
+    reject_log["h0_stratified_counts"] = counts.astype(int).tolist()
+    reject_log["h0_stratified_quotas"] = quotas.astype(int).tolist()
+    reject_log["h0_stratified_edges"] = np.linspace(
+        TRUTH_V0_3_H0_STRATIFIED_RANGE[0],
+        TRUTH_V0_3_H0_STRATIFIED_RANGE[1],
+        TRUTH_V0_3_H0_STRATIFIED_BINS + 1,
+    ).astype(float).tolist()
+    reject_log["n_achieved"] = len(pairs)
+    attempts = np.asarray(reject_log["attempts_per_accepted"], dtype=float)
+    residuals = np.asarray(reject_log["root_residual_norms"], dtype=float)
+    conds = np.asarray(reject_log["condition_numbers"], dtype=float)
+    reject_log["attempts_mean"] = float(np.mean(attempts)) if attempts.size else 0.0
+    reject_log["attempts_max"] = int(np.max(attempts)) if attempts.size else 0
+    reject_log["root_residual_norm_median"] = float(np.median(residuals)) if residuals.size else 0.0
+    reject_log["root_residual_norm_max"] = float(np.max(residuals)) if residuals.size else 0.0
+    reject_log["condition_number_median"] = float(np.median(conds)) if conds.size else 0.0
+    reject_log["condition_number_max_observed"] = float(np.max(conds)) if conds.size else 0.0
+    return bases, pairs, reject_log
+
+
 def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rng = np.random.default_rng(config.seed)
     lc_rng = np.random.default_rng(config.seed + 1000)
     validity_mode = _validity_mode(config)
+    if validity_mode == "v0_3":
+        return _collect_valid_pairs_stratified(config)
     pairs: list[dict[str, Any]] = []
     bases: list[dict[str, Any]] = []
     reject_log = _empty_reject_log(config)
@@ -682,47 +856,11 @@ def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], l
             base = _sample_base_system(rng)
             pair = _compute_pair(base, config, config.include_nfw, config.include_kappa_ext, validate=True)
             if pair.get("valid"):
-                lc = QuasarLightCurve(seed=int(lc_rng.integers(0, 2**31 - 1))).generate(
-                    n_epochs=config.n_epochs,
-                    total_days=1000.0,
-                    survey="ztf",
-                )
-                joint, noise = _joint_curve(lc["flux"], lc["flux_err"], lc["t_obs"], pair["dt_true"], pair["mu_true"])
-                sigma_curve = _sigma_curve(lc_rng, config.sigma_curve_size, pair["dt_true"])
-                lc_invalid_reason = None
-                if validity_mode != "off":
-                    lc_invalid_reason = _validity_reject_reason(
-                        dt_true=float(pair["dt_true"]),
-                        dt_approx=float(pair["approx"].dt_approx),
-                        h0_true=float(pair["H0_true"]),
-                        h0_approx=float(pair["approx"].H0_approx),
-                        phi_truth=float(pair["truth_fermat_potential"]),
-                        phi_sie=float(pair["approx"].fermat_potential),
-                        mu_truth=float(pair["mu_true"]),
-                        separation_truth=float(pair["separation_truth"]),
-                        dphi_ratio=float(pair["dphi_ratio"]),
-                        i_obs_sum=float(np.sum(pair["I_obs"])),
-                        f_joint_absmax=float(np.max(np.abs(joint))),
-                        apply_v0_2_filters=validity_mode == "v0_2",
-                    )
-                if lc_invalid_reason is not None:
-                    _record_reject(reject_log, lc_invalid_reason)
+                if not _attach_light_curve(pair, config, lc_rng, reject_log, validity_mode):
                     continue
-                pair["F_joint"] = joint
-                pair["sigma_noise"] = noise
-                pair["t_obs"] = lc["t_obs"]
-                pair["sigma_curve"] = sigma_curve
                 bases.append(base)
                 pairs.append(pair)
-                reject_log["attempts_per_accepted"].append(attempt)
-                sol = pair["truth_solution"]
-                reject_log["dedupe_count_total"] += int(sol.get("dedupe_count", 0))
-                reject_log["root_residual_norms"].extend(
-                    float(d["residual_norm"]) for d in sol.get("diagnostics", [])
-                )
-                reject_log["condition_numbers"].extend(
-                    float(d["condition_number"]) for d in sol.get("diagnostics", [])
-                )
+                _record_pair_diagnostics(reject_log, pair, attempt)
                 accepted = True
                 break
             _record_reject(reject_log, str(pair.get("reject_reason", "unknown")))
@@ -830,7 +968,7 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["n_systems"] = n
         meta.attrs["random_seed"] = config.seed
         meta.attrs["full_truth_available"] = True
-        meta.attrs["generator_version"] = "phase4-v0.2"
+        meta.attrs["generator_version"] = "phase4-v0.3" if validity_mode == "v0_3" else "phase4-v0.2"
         meta.attrs["truth_model"] = config.truth_model
         meta.attrs["validity_filter"] = (
             "off_for_eval; root convergence required" if validity_mode == "off" else validity_mode
@@ -853,6 +991,10 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["v0_2_I_obs_sum_max"] = TRUTH_V0_2_I_OBS_SUM_MAX
         meta.attrs["v0_2_F_joint_absmax_max"] = TRUTH_V0_2_F_JOINT_ABSMAX_MAX
         meta.attrs["v0_2_mode1_H0_correction_absmax"] = TRUTH_V0_2_MODE1_CORRECTION_ABSMAX
+        meta.attrs["v0_3_h0_neutral_filter"] = validity_mode == "v0_3"
+        meta.attrs["v0_3_h0_stratified_min"] = TRUTH_V0_3_H0_STRATIFIED_RANGE[0]
+        meta.attrs["v0_3_h0_stratified_max"] = TRUTH_V0_3_H0_STRATIFIED_RANGE[1]
+        meta.attrs["v0_3_h0_stratified_bins"] = TRUTH_V0_3_H0_STRATIFIED_BINS
 
         params = f.create_group("params")
         for key in ("H0", "z_lens", "z_source", "sigma_v", "M200", "concentration", "q"):
@@ -950,6 +1092,7 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         "phase4_v0_std": float(np.std(corrections)),
         "phase4_v0_1_std": float(np.std(corrections)),
         "phase4_v0_2_std": float(np.std(corrections)),
+        "phase4_v0_3_std": float(np.std(corrections)),
         "correction_sign": "true_minus_approx",
         "validity_filter": validity_mode,
         "image_size": config.image_size,
@@ -963,6 +1106,7 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
             "F_joint_absmax_max": TRUTH_V0_2_F_JOINT_ABSMAX_MAX,
             "mode1_H0_correction_absmax": TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
         },
+        "v0_3_policy": reject_log["v0_3_policy"],
         "image_shift_arcsec": _distribution(np.asarray([p["image_shift_arcsec"] for p in pairs], dtype=float)),
         "root_residual_norm": {
             "median": reject_log["root_residual_norm_median"],
@@ -973,6 +1117,9 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
             "attempts_max": reject_log["attempts_max"],
             "reject_counts": reject_log["reject_counts"],
             "dedupe_count_total": reject_log["dedupe_count_total"],
+            "h0_stratified_counts": reject_log.get("h0_stratified_counts"),
+            "h0_stratified_quotas": reject_log.get("h0_stratified_quotas"),
+            "h0_stratified_edges": reject_log.get("h0_stratified_edges"),
         },
     }
     if isinstance(baseline_std, float) and baseline_std > 0:
@@ -995,7 +1142,7 @@ def main() -> None:
     parser.add_argument("--reject-log-path", type=Path, default=None)
     parser.add_argument("--diagnosis-log-path", type=Path, default=None)
     parser.add_argument("--resample-budget", type=int, default=None)
-    parser.add_argument("--validity-filter", choices=("v0_2", "v0_1", "off"), default="v0_2")
+    parser.add_argument("--validity-filter", choices=("v0_3", "v0_2", "v0_1", "off"), default="v0_2")
     parser.add_argument("--eval-role", default=None)
     args = parser.parse_args()
     summary = build_phase4_catalog(

@@ -44,3 +44,8 @@ training:
   amp: true
 
 seed: 1337
+
+catalog:
+  phase4_v0_3:
+    h0_stratified_range: [60.0, 80.0]
+    h0_stratified_bins: 10

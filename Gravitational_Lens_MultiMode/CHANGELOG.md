@@ -3,6 +3,22 @@
 
 ---
 
+## [2026-05-22] — Phase 4 v0.3 H0-neutral catalog filter
+- `ml/data/error_catalog.py`: `validity_filter="v0_3"` 추가. label-dependent `H0_approx`/correction gates와 v0.2 support-tail gates를 제거하고 root/finite/`dt_true>0`/`|mu|<0.98`/physical separation만 유지한 뒤 H0 10-bin stratified quota를 적용.
+- `data/mock/phase4_v0_3.h5`: n=500, seed=42, H0 bins 50개씩. filtered H0 KS vs U[60,80] p `0.984`로 v0.2 p `1.8e-6` 대비 개선.
+- `data/mock/phase4_v0_3_eval_unfiltered.h5`, `data/logs/phase4_v0_3_{label_distribution,floor_analysis,selection_bias_analysis}.json`, `data/target_scaler_phase4_v0_3.pkl` 생성. filtered/unfiltered distribution match: H0 KS p `0.144`, correction KS p `0.801`, dphi_ratio KS p `0.853`, mu KS p `0.685`, separation KS p `0.351`.
+- `scripts/phase4_v0_3_round.py`: v0.2와 동일한 모델/입력/loss/optimizer/batch/AMP 평가 경로를 v0.3 artifact 이름으로 복제하고 selection-bias acceptance ratio `<=2.5`, coverage target `[0.62,0.78]`를 사전 선언.
+
+## [2026-05-22] — Phase 4 v0.2 Kaggle 학습 결과 회수 + acceptance 판정
+- Kaggle T4 CUDA 학습 산출물을 repo로 회수: `data/checkpoints/phase4_v0_2_imgres_best.pt`, `data/logs/phase4_v0_2_imgres_h0_eval{,_unfiltered}.json`, `phase4_v0_2_imgres_long_history.json`, `phase4_v0_2_infra_equivalence.json`.
+- 학습: 50 epoch 상한 중 epoch 16 early-stop (best epoch 8, best_val_m1 `0.5014`), NaN 0. equivalence 통과(forward diff ~1e-9, Welch p `0.9981`, param_encoder_input_dim 13).
+- Mode 1 지표 — filtered_val: RMSE `4.33`(no-correction `17.74`), r `0.65`, 1σ coverage `0.54`, correction positive_fraction `1.0`. unfiltered_all: RMSE `14.62`, r `0.28`, coverage `0.21`, bias `-10.8`.
+- **acceptance 불합격**: filtered r `0.65 < 0.85`, filtered RMSE CI upper `5.09 > 4.862`, unfiltered/filtered RMSE 비율 `3.38 > 2.5`(leak 임계 `3.18`도 초과 → selection-bias leak 발동). coverage CI `[0.39,0.68]`는 목표 `[0.62,0.78]`와 경계만 겹쳐 over-confident. `val_H0_true` KS vs U[60,80] p `1.8e-6`로 filtered H0 분포 왜곡 확인.
+- 결론: 재학습 문제가 아니라 catalog validity filter의 selection bias. 후속 진단은 같은 날짜 selection bias 항목 참조.
+
+## [2026-05-22] — Phase 4 v0.2 selection bias 진단
+- `scripts/analyze_phase4_v0_2_selection_bias.py`: v0.2 validity filter를 unfiltered catalog에 재적용해 컷별 H0 왜곡, filtered/unfiltered support 차이, fixed-model reweight RMSE를 분석. v0.2 Kaggle 불합격 원인을 재학습 문제가 아닌 catalog selection bias로 정리하고 v0.3 H0-중립 filter 방향을 `STATUS.md`에 기록.
+
 ## [2026-05-22] — Phase 4 v0.2 Kaggle Dataset dry-run 준비
 - `scripts/sync_to_kaggle.py`: round handoff 파일 목록에 `data/logs/phase4_v0_2_floor_analysis.json`을 포함하고 dry-run 파일 표시를 repo-relative source/staged name으로 정리.
 - `python scripts/sync_to_kaggle.py --round phase4_v0_2 --init-dataset --slug lens-phase4-v0-2` dry-run 확인: train HDF5, unfiltered eval HDF5, target scaler, equivalence JSON, floor JSON 모두 포함, missing 0.

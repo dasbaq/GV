@@ -218,13 +218,46 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   `target_scaler_phase4_v0_2.pkl`, `phase4_v0_2_equivalence.json`,
   `phase4_v0_2_floor_analysis.json`이 포함되고 missing 0이다.
   실제 upload는 사용자 승인 전이라 미실행 상태다.
+- Phase 4 v0.2 Kaggle full run은 filtered RMSE `4.33`, r `0.65`,
+  coverage `0.54`였지만 unfiltered RMSE `14.62`, r `0.28`, coverage `0.21`,
+  bias `-10.8`로 악화되어 leak trigger가 발동했다
+  (`unfiltered/filtered RMSE=3.38 > 3.18`). M2 로컬 분석 결과 v0.2
+  불합격의 주원인은 재학습 문제가 아니라 카탈로그 selection bias다.
+  unfiltered root-converged catalog에 v0.2 filter를 재적용하면 n `200 -> 75`,
+  H0 KS p `0.029 -> 0.00285`로 악화되고, robust한 H0 왜곡은
+  v0.1 `H0_approx in [45,90]` gate가 가장 크며 v0.2 separation floor가
+  추가 왜곡을 만든다. filtered catalog는 correction/dphi_ratio/mu/separation
+  support가 full unfiltered보다 cut 통과 subset에 가까워 쉬운 영역만 남긴다.
+  Kaggle 산출물을 repo로 회수: `data/checkpoints/phase4_v0_2_imgres_best.pt`,
+  `data/logs/phase4_v0_2_imgres_h0_eval{,_unfiltered}.json`,
+  `phase4_v0_2_imgres_long_history.json`, `phase4_v0_2_infra_equivalence.json`
+  (git ignored). 학습은 50 epoch 상한 중 epoch 16 early-stop(best epoch 8,
+  best_val_m1 `0.5014`), NaN 0. acceptance 불합격 항목은 filtered r `0.65 < 0.85`,
+  filtered RMSE CI upper `5.09 > 4.862`, unfiltered/filtered 비율 `3.38 > 2.5`다.
+- Phase 4 v0.3 catalog filter를 M2 로컬에서 구현/생성했다.
+  v0.3은 label-dependent `H0_approx in [45,90]` 및
+  `abs(mode1_H0_correction)` gate와 v0.2 support-tail gates를 제거하고,
+  root convergence/finite/`dt_true > 0`/`|mu_truth| < 0.98`/truth image
+  separation `>= 0.1 arcsec`만 validity로 유지한다. 이후 H0 `[60,80]`를
+  10개 bin으로 나눠 stratified quota를 적용한다.
+  `data/mock/phase4_v0_3.h5`는 n=500, seed=42, bin별 50개씩이며
+  filtered H0 KS vs U[60,80] p `0.984`로 v0.2 p `1.8e-6` 대비 개선됐다.
+  unfiltered eval(`data/mock/phase4_v0_3_eval_unfiltered.h5`)과 비교한 1D
+  KS p는 H0 `0.144`, correction `0.801`, dphi_ratio `0.853`, mu `0.685`,
+  separation `0.351`이다. `data/logs/phase4_v0_3_floor_analysis.json`에
+  no-correction/oracle baseline과 selection-bias acceptance 사전 기준
+  (`unfiltered/filtered RMSE <= 2.5`, coverage `[0.62,0.78]`)을 고정했다.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. 사용자 승인 후 Phase 4 v0.2 Kaggle Dataset `--execute` 업로드 또는 Kaggle CUDA `--phase train` 재학습 라운드 수행
-3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
-4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
-5. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결
+2. Phase 4 v0.3 Dataset dry-run은 완료됐으므로, 필요 시
+   `python scripts/sync_to_kaggle.py --round phase4_v0_3 --init-dataset --slug lens-phase4-v0-3 --execute`
+   로 Kaggle Dataset 업로드 후 Kaggle CUDA에서 `scripts/phase4_v0_3_round.py --phase train` 수행.
+3. Phase 4 v0.3에서 coverage 개선은 NLL/calibration 문제로 별도 점검한다
+   (filtered validation뿐 아니라 unfiltered/cut-boundary bin별 residual/sigma 검증).
+4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
+5. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
+6. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결
