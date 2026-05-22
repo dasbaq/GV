@@ -9,7 +9,15 @@ from ml.data.error_catalog import (
     TRUTH_MIN_IMAGE_SEPARATION_ARCSEC,
     TRUTH_MU_MAX,
     TRUTH_ROOT_RESIDUAL_ARCSEC,
+    TRUTH_V0_2_DPHI_RATIO_RANGE,
+    TRUTH_V0_2_DT_APPROX_MAX_DAYS,
+    TRUTH_V0_2_F_JOINT_ABSMAX_MAX,
+    TRUTH_V0_2_I_OBS_SUM_MAX,
+    TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC,
+    TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
+    TRUTH_V0_2_MU_MAX,
     CatalogConfig,
+    _validity_reject_reason,
     build_phase4_catalog,
 )
 
@@ -62,3 +70,101 @@ def test_phase4_metadata_records_sie_anchored_search(tmp_path) -> None:
         assert "SIE-anchored" in f["metadata"].attrs["truth_image_search_mode"]
         assert float(f["metadata"].attrs["truth_image_dedupe_arcsec"]) == 0.01
         assert f["metadata"].attrs["correction_sign"] == "true_minus_approx"
+
+
+def _validity_kwargs(**overrides):
+    kwargs = {
+        "dt_true": 10.0,
+        "dt_approx": 10.0,
+        "h0_true": 70.0,
+        "h0_approx": 60.0,
+        "phi_truth": 1.0e-11,
+        "phi_sie": 8.0e-12,
+        "mu_truth": 0.5,
+        "separation_truth": 2.0,
+        "dphi_ratio": 0.8,
+        "i_obs_sum": 10.0,
+        "f_joint_absmax": 2.0,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_phase4_v0_2_threshold_boundaries_pass() -> None:
+    assert _validity_reject_reason(**_validity_kwargs(mu_truth=TRUTH_V0_2_MU_MAX)) is None
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(dphi_ratio=TRUTH_V0_2_DPHI_RATIO_RANGE[0])
+        )
+        is None
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(dphi_ratio=TRUTH_V0_2_DPHI_RATIO_RANGE[1])
+        )
+        is None
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(separation_truth=TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC)
+        )
+        is None
+    )
+    assert _validity_reject_reason(**_validity_kwargs(dt_approx=TRUTH_V0_2_DT_APPROX_MAX_DAYS)) is None
+    assert _validity_reject_reason(**_validity_kwargs(i_obs_sum=TRUTH_V0_2_I_OBS_SUM_MAX)) is None
+    assert _validity_reject_reason(**_validity_kwargs(f_joint_absmax=TRUTH_V0_2_F_JOINT_ABSMAX_MAX)) is None
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(
+                h0_true=TRUTH_H0_APPROX_RANGE[0] + TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
+                h0_approx=TRUTH_H0_APPROX_RANGE[0],
+            )
+        )
+        is None
+    )
+
+
+def test_phase4_v0_2_threshold_boundaries_reject() -> None:
+    assert (
+        _validity_reject_reason(**_validity_kwargs(mu_truth=TRUTH_V0_2_MU_MAX + 1.0e-4))
+        == "mu_truth_gt_v0_2_p99"
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(dphi_ratio=TRUTH_V0_2_DPHI_RATIO_RANGE[0] - 1.0e-4)
+        )
+        == "dphi_ratio_outside_v0_2_p01_p99"
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(dphi_ratio=TRUTH_V0_2_DPHI_RATIO_RANGE[1] + 1.0e-4)
+        )
+        == "dphi_ratio_outside_v0_2_p01_p99"
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(separation_truth=TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC - 1.0e-4)
+        )
+        == "image_separation_lt_v0_2_p01"
+    )
+    assert (
+        _validity_reject_reason(**_validity_kwargs(dt_approx=TRUTH_V0_2_DT_APPROX_MAX_DAYS + 1.0e-4))
+        == "dt_approx_gt_v0_2_p99"
+    )
+    assert (
+        _validity_reject_reason(**_validity_kwargs(i_obs_sum=TRUTH_V0_2_I_OBS_SUM_MAX + 1.0e-4))
+        == "image_sum_gt_v0_2_p99"
+    )
+    assert (
+        _validity_reject_reason(**_validity_kwargs(f_joint_absmax=TRUTH_V0_2_F_JOINT_ABSMAX_MAX + 1.0e-4))
+        == "lc_absmax_gt_v0_2_p99"
+    )
+    assert (
+        _validity_reject_reason(
+            **_validity_kwargs(
+                h0_true=TRUTH_H0_APPROX_RANGE[0] + TRUTH_V0_2_MODE1_CORRECTION_ABSMAX + 1.0e-4,
+                h0_approx=TRUTH_H0_APPROX_RANGE[0],
+            )
+        )
+        == "mode1_correction_abs_gt_v0_2_p99"
+    )

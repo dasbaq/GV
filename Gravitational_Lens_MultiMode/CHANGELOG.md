@@ -3,6 +3,90 @@
 
 ---
 
+## [2026-05-22] — Phase 4 v0.2 Kaggle Dataset dry-run 준비
+- `scripts/sync_to_kaggle.py`: round handoff 파일 목록에 `data/logs/phase4_v0_2_floor_analysis.json`을 포함하고 dry-run 파일 표시를 repo-relative source/staged name으로 정리.
+- `python scripts/sync_to_kaggle.py --round phase4_v0_2 --init-dataset --slug lens-phase4-v0-2` dry-run 확인: train HDF5, unfiltered eval HDF5, target scaler, equivalence JSON, floor JSON 모두 포함, missing 0.
+- 실제 Kaggle upload는 미실행. 사용자 승인 후 `--execute`로 진행 대기.
+
+## [2026-05-22] — Phase 4 v0.2 floor/scaler/equivalence 확인
+- `data/mock/phase4_v0_2.h5` 및 `data/mock/phase4_v0_2_eval_unfiltered.h5` 존재와 schema sign(`true_minus_approx`) 확인.
+- `data/target_scaler_phase4_v0_2.pkl`: Mode 1 mean `17.4868`, scale `5.7334`로 finite/non-zero 확인.
+- `data/logs/phase4_v0_2_floor_analysis.json`: `mode1_H0_correction` mean/std/min/max `17.3624/5.8614/5.9792/32.2613`, NaN/Inf 0, `|mu_truth| < 1` 확인.
+- `data/logs/phase4_v0_2_equivalence.json`: 기존 MPS handoff 기준 forward max diff `1.043e-07`, Welch p `0.9981`, passed. 현재 Codex 프로세스는 MPS unavailable로 재실행 명령이 시작 전 중단됨.
+- 같은 scaler로 CPU 1-epoch seed 42/1337/7 보조 점검 시 train loss `1.2928/1.3547/1.4253`, NaN batch 0.
+
+## [2026-05-22] — Mode 1 관측 → H0 엔드투엔드 CLI 추가
+- `pipelines/run_mode1.py`: 관측 HDF5 입력에서 `ObservedLensSystem` 로드 → Δt_obs 추출 → SIE fit Δφ 산출 → `invert_h0` 실행 → JSON 출력 CLI 추가.
+- `pipelines/run_mode1.py`: Phase 5 ML 보정 훅을 `--apply-correction`으로 마련하되 기본 off, checkpoint 부재/ML inference 미구현 시 `correction skipped`를 명시.
+- `tests/test_run_mode1_e2e.py`: forward SIE/SIS self-consistency 관측 HDF5를 생성해 CLI와 함수 경로에서 H0 회복 검증 추가.
+
+## [2026-05-22] — 실관측 포맷 광도곡선 Δt 추출 경로 추가
+- `inversion/delay_extraction.py`: `ObservedLensSystem.light_curves`에서 Phase 1 벡터화 Δt/μ grid를 적용해 `dt_obs_days`, μ, Σ 진단, MOCK 플래그를 반환하는 파이프라인 추가.
+- `tests/test_delay_extraction_obs.py`: 합성 system6 포맷 MOCK에서 주입 Δt 회복 및 `|mu| < 1` guard/벡터화 검증 추가.
+
+## [2026-05-22] — Mode 1 Δφ 단위/import 정합성 수정
+- `inversion/mode1_h0.py`: Mode 1 입력 Δφ 단위를 [rad²]로 통일하고 `approx_level=0` EXACT 거리 경로를 `core.physics.distances`로 연결.
+- `tests/test_mode1_consistency.py`: `standard_approx.invert_h0_from_delay_sie`와 Mode 1 EXACT 구현의 H0 일치 및 arcsec² 오입력 회귀 테스트 추가.
+
+## [2026-05-22] — 관측 상 위치 → SIE fit → Δφ 모듈 추가
+- `inversion/sie_fit.py`: 관측 상 위치에서 SIE 파라미터를 least-squares로 역피팅하고 `dphi_rad2`를 산출하는 모듈 추가.
+
+## [2026-05-22] — 관측 입력 어댑터 추가
+- `inversion/observation_io.py`: Mode 1/2용 실관측 최소 입력 dataclass와 dict/HDF5 로더 추가.
+
+## [2026-05-11] — Phase 4 v0.2 CUDA outlier validity filter
+
+### 변경
+- `ml/data/error_catalog.py`: Phase 4 v0.2 CUDA fp16/AMP 안정화용 p99 validity filter 추가.
+  기존 v0.1 기준(root/finite/`dt_true > 0`/`abs(mu_truth) < 0.98`/분리/H0/dphi)은 보존하고,
+  full-truth catalog에서만 아래 신규 기준을 AND 결합한다.
+  - `abs(mu_truth) <= 0.9699`
+  - `dphi_sie / dphi_truth in [0.5878, 0.9201]`
+  - truth image separation `>= 0.6598 arcsec`
+  - `dt_approx <= 444.7 days`
+  - `I_obs.sum() <= 77.79`
+  - `max(abs(F_joint)) <= 3.408`
+  - `abs(mode1_H0_correction) <= 32.27`
+- `ml/data/error_catalog.py`: v0.2 reject reason과 threshold metadata/log 기록 추가.
+  off/off sanity용 `include_nfw=False, include_kappa_ext=False` catalog에는 v0.2 p99 filter를 적용하지 않고
+  v0.1 validity만 적용한다.
+- `ml/data/error_catalog.py`: `--log-path`, `--reject-log-path`, `--diagnosis-log-path`,
+  `--resample-budget`, `--validity-filter {v0_2,v0_1,off}`, `--eval-role` CLI 옵션 추가.
+- `scripts/phase4_v0_2_round.py`: v0.2 artifact 이름을 쓰는 round 스크립트 추가.
+  모델 구조, loss, optimizer, batch size, AMP 정책 및 acceptance 임계는 v0.1 round와 동일하게 유지.
+- `tests/test_phase4_validity.py`: v0.2 신규 임계의 경계 통과/탈락 단위 테스트 추가.
+
+### 산출물
+- `data/mock/phase4_v0_2.h5`: n=500, seed=42.
+- `data/mock/phase4_v0_2_eval_unfiltered.h5`: n=200, seed=42,
+  `validity_filter="off_for_eval; root convergence required"`.
+- `data/logs/phase4_v0_2_label_distribution.json`
+- `data/logs/phase4_v0_2_reject_log.json`
+- `data/logs/phase4_v0_2_eval_unfiltered_label_distribution.json`
+- `data/logs/phase4_v0_2_eval_unfiltered_reject_log.json`
+- `data/target_scaler_phase4_v0_2.pkl`: train split 기반 Mode 1/3 mean/std scaler.
+
+### 결과
+- v0.2 `mode1_H0_correction`: mean `17.362`, std `5.861`,
+  min/max `5.979/32.261`.
+- v0.1 대비 std `6.273 -> 5.861`, max `34.747 -> 32.261`.
+- v0.2 unfiltered eval `mode1_H0_correction`: mean `30.378`, std `13.515`,
+  min/max `6.543/69.339`; reject는 root convergence 계열만 발생
+  (`root_find_residual=14`, `dedupe_lt2=9`).
+- resample attempts mean `2.776`, max `16`.
+- 신규 reject counts:
+  `dphi_ratio_outside_v0_2_p01_p99=9`, `dt_approx_gt_v0_2_p99=4`,
+  `image_separation_lt_v0_2_p01=6`, `image_sum_gt_v0_2_p99=5`,
+  `lc_absmax_gt_v0_2_p99=4`, `mu_truth_gt_v0_2_p99=8`.
+
+### 검증
+- `python -m py_compile ml/data/error_catalog.py scripts/phase4_v0_2_round.py`
+- `pytest -q tests/test_phase4_validity.py tests/test_standard_approx.py tests/test_error_catalog.py tests/test_truth_image_solver.py`
+  → 12 passed.
+- `python -c "import h5py; f=h5py.File('data/mock/phase4_v0_2.h5','r'); print(f['metadata'].attrs['n_systems'])"`
+  → `500`.
+- v0.1/v0.2 `mode1_H0_correction` std/min/max/percentile 비교 출력 확인.
+
 ## [2026-05-05] — 워크플로우 구조 정착 (M2 전처리 / Kaggle GPU 학습)
 
 ### 추가

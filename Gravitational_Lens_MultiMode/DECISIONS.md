@@ -4,6 +4,79 @@
 
 ---
 
+## [2026-05-22] Mode 1 Fermat potential unit convention
+
+### 결정
+Mode 1 H0 inversion에서 페르마 포텐셜 차이 Δφ는 항상 `[rad²]`로 전달하고 저장한다.
+
+### 운영 규칙
+- `inversion/mode1_h0.invert_h0` 입력 `fermat_potential_rad2`는 `[rad²]`만 허용한다.
+- `core.physics.standard_approx.invert_h0_from_delay_sie`와 `inversion/mode1_h0`는 동일한
+  `[days, rad², z_lens, z_source]` 입력 계약을 공유한다.
+- 관측 상 위치 역피팅(`inversion/sie_fit.py`)의 출력 키는 단위를 드러내는 `dphi_rad2`로 유지한다.
+- arcsec² 값이 필요한 표시/외부 입출력에서는 호출부에서 명시적으로 변환하고,
+  Mode 1 solver 내부에서 암묵 변환하지 않는다.
+
+### 결정 근거
+시간지연 물리식 `Δt = (1 + z_L) * (D_L D_S / D_LS) * Δφ / c`에서 Δφ는 무차원 각도 제곱이며
+프로젝트의 SIE lens `fermat_potential` 및 표준 근사 H0 inversion은 `[rad²]`를 사용한다.
+Mode 1 solver도 이 규약으로 맞춰 두 구현 간 단위 불일치를 제거한다.
+
+### 관련 파일
+- `inversion/mode1_h0.py`
+- `core/physics/standard_approx.py`
+- `inversion/sie_fit.py`
+- `tests/test_mode1_consistency.py`
+
+## [2026-05-11] Phase 4 v0.2 CUDA outlier validity filter
+
+### 결정
+Phase 4 v0.1 catalog의 Kaggle CUDA fp16/AMP train NaN은 hyperparameter 변경 없이
+catalog validity filter 강화로 대응한다.
+
+v0.2는 v0.1 validity criteria를 그대로 유지하고, full-truth catalog entry에 다음 p99 기반
+tail filter를 AND 결합한다.
+
+| 항목 | v0.2 기준 | 근거 |
+|---|---:|---|
+| `abs(mu_truth)` | `<= 0.9699` | v0.1 train split p99 |
+| `dphi_sie / dphi_truth` | `[0.5878, 0.9201]` | v0.1 train split p1/p99 |
+| truth image separation | `>= 0.6598 arcsec` | v0.1 train split p1 |
+| `dt_approx` | `<= 444.7 days` | v0.1 train split p99 |
+| `I_obs.sum()` | `<= 77.79` | v0.1 train split p99 |
+| `max(abs(F_joint))` | `<= 3.408` | v0.1 train split p99 |
+| `abs(mode1_H0_correction)` | `<= 32.27` | v0.1 train split p99 |
+
+### 운영 규칙
+- 모델 구조, 입력, loss, optimizer, lr, batch size, grad clip, AMP 정책은 변경하지 않는다.
+- v0.2 filter는 generator-level full-truth catalog validity filter다.
+- selection-bias 평가용 unfiltered catalog는 `validity_filter=off`로 생성한다.
+  이 모드는 root convergence/dedupe 실패만 reject하고 v0.1/v0.2 value filter는 적용하지 않는다.
+- off/off sanity catalog(`include_nfw=False`, `include_kappa_ext=False`)에는 v0.2 p99 filter를 적용하지 않고
+  v0.1 validity만 적용한다. off/off에서는 `dphi_sie/dphi_truth = 1`이 정상이라 v0.2 upper tail filter와
+  의도적으로 충돌하기 때문이다.
+- v0.2 round 스크립트는 v0.1 round와 같은 학습/평가 정책을 쓰고 artifact 이름만 분리한다.
+  acceptance 임계는 CUDA train 결과가 나오기 전 임의 조정하지 않는다.
+
+### 결과
+- `data/mock/phase4_v0_2.h5`: n=500, seed=42.
+- `data/mock/phase4_v0_2_eval_unfiltered.h5`: n=200, seed=42, root convergence only.
+- `data/logs/phase4_v0_2_label_distribution.json`
+- `data/logs/phase4_v0_2_reject_log.json`
+- `data/logs/phase4_v0_2_eval_unfiltered_label_distribution.json`
+- `data/logs/phase4_v0_2_eval_unfiltered_reject_log.json`
+- `data/target_scaler_phase4_v0_2.pkl`
+- v0.2 `mode1_H0_correction`: mean `17.362`, std `5.861`, min/max `5.979/32.261`.
+- v0.1 대비 std `6.273 -> 5.861`, max `34.747 -> 32.261`.
+- resample attempts mean `2.776`, max `16`.
+
+### 관련 파일
+- `ml/data/error_catalog.py`
+- `scripts/phase4_v0_2_round.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_2_label_distribution.json`
+- `data/logs/phase4_v0_2_reject_log.json`
+
 ## [2026-05-05] M2 전처리 / Kaggle GPU 학습 분업 및 round phase 분리
 
 ### 결정

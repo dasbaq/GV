@@ -198,7 +198,7 @@ H₀ ∝ 1 / D_Δt              ← Mode 1 역산의 핵심 관계
 
 ```
 Mode 1 (H₀ 역산):
-  주어진 Δt_obs와 SIE 모델로 추정된 Δφ에 대해
+  주어진 Δt_obs와 SIE 모델로 추정된 Δφ [rad²]에 대해
     H₀ = (c · Δφ · (1+z_L)) / (Δt_obs · D̃_Δt(H₀=1))
   비선형 최적화 또는 MCMC로 풀이.
 
@@ -257,7 +257,7 @@ simulation_YYYYMMDD_HHMMSS.h5
 │
 ├── ray_paths/                   # [n_systems]
 │   ├── theta_1, theta_2  [arcsec]
-│   └── fermat_potential  [arcsec²]
+│   └── fermat_potential  [rad²]
 │
 ├── approx_outputs/              # [n_systems]   ← 표준 근사로 푼 결과
 │   ├── dt_approx               # SIE 가정 하의 Δt

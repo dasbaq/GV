@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
 
-마지막 업데이트: 2026-05-05
+마지막 업데이트: 2026-05-22
 
 ---
 
@@ -21,7 +21,7 @@
 
 | Mode | 역할 | 입력 → 출력 | 구현 상태 |
 |------|------|-------------|-----------|
-| Mode 1 | 허블 상수 역산 | (Δt, 렌즈 모델) → H₀ | ⬜ 미구현 |
+| Mode 1 | 허블 상수 역산 | (Δt, 렌즈 모델) → H₀ | ✅ 관측→H₀ E2E 구현 (ML 보정 off 기본) |
 | Mode 2 | 암흑물질 분포 역산 | (Δt, θ_i, μ_i, H₀) → DM 파라미터 | ⬜ 미구현 |
 | Mode 3 | Source 이미지 복원 | I_obs(x,y) → S(x,y) | ✅ 구현 완료 (별도 모듈) |
 
@@ -88,7 +88,11 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 ### 5-A. 역산 솔버 (Mode 1/2 신규, Mode 3 wrapper)
 
 ```
-[ ] inversion/mode1_h0.py          — H₀ 역산 솔버 (SIE 가정)
+[x] inversion/observation_io.py     — 관측 입력 어댑터 추가
+[x] inversion/delay_extraction.py   — 실관측 포맷 광도곡선 → Δt_obs 추출
+[x] inversion/sie_fit.py            — 관측 상 위치 → SIE fit → Δφ 산출
+[x] inversion/mode1_h0.py          — H₀ 역산 솔버 단위/import 정합성 수정 (Δφ [rad²])
+[x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ JSON CLI
 [ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
 [ ] inversion/mode3_wrapper.py     — 기존 Mode 3 솔버 호출 wrapper (코드 수정 금지)
 ```
@@ -119,7 +123,7 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 
 | 벤치마크 | 적용 Mode | 상태 | 마지막 실행 |
 |---------|----------|------|-----------|
-| system 6 (Δt=24.14일) | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음, synthetic smoke 통과 | 2026-05-02 |
+| system 6 (Δt=24.14일) | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음, 실관측 포맷 synthetic Δt 오차 0.09일 | 2026-05-22 |
 | ZTF 노이즈 전체 통계 | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | SDSS J1226-0006 | Mode 1 출력 (H₀) | ⬜ 미실행 | — |
 | TDC1 Rung 0 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
@@ -193,13 +197,34 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   false-positive가 확인되어 round phase 분리 및 acceptance epoch gate를 도입했다.
   같은 sanity에서 `scheduler.step()` warning과 seed=1337 CUDA epoch1 `train=nan`
   1회가 관측되어 NaN 진단 로그만 추가했다. hyperparameter tuning은 하지 않는다.
+- Phase 4 v0.1 CUDA train에서 seed 42/1337 및 scaler variant에서 NaN이 3회 연속 발생해
+  v0.2 catalog를 생성했다. v0.2는 v0.1 validity 위에 p99 기반 tail filter
+  (`abs(mu_truth) <= 0.9699`, `dphi_sie/dphi_truth in [0.5878, 0.9201]`,
+  separation `>= 0.6598`, `dt_approx <= 444.7`, `I_obs.sum <= 77.79`,
+  `max(abs(F_joint)) <= 3.408`, `abs(mode1_H0_correction) <= 32.27`)를 AND 결합한다.
+  `mode1_H0_correction` std는 v0.1 `6.273`에서 v0.2 `5.861`로 감소했다.
+- `data/mock/phase4_v0_2_eval_unfiltered.h5`는 selection-bias 평가용으로 별도 생성했다.
+  v0.1 unfiltered와 동일하게 n=200, seed=42, root convergence만 요구하고 v0.1/v0.2 value filter는 끈다.
+- Phase 4 v0.2 floor/scaler/equivalence handoff를 확인했다.
+  `data/target_scaler_phase4_v0_2.pkl` Mode 1 mean/scale은 `17.4868/5.7334`,
+  `data/logs/phase4_v0_2_floor_analysis.json`의 `mode1_H0_correction`
+  mean/std/min/max는 `17.3624/5.8614/5.9792/32.2613`이며 NaN/Inf 0, `|mu_truth| < 1`.
+  기존 `data/logs/phase4_v0_2_equivalence.json`은 MPS forward max diff `1.043e-07`,
+  Welch p `0.9981`로 통과했다. 현재 Codex 프로세스에서는 MPS unavailable이라
+  재실행 명령은 시작 전 중단됐다. 같은 scaler의 CPU 1-epoch seed 42/1337/7
+  보조 점검에서는 train loss `1.2928/1.3547/1.4253`, NaN batch 0.
+- Phase 4 v0.2 Kaggle Dataset dry-run을 확인했다.
+  `phase4_v0_2.h5`, `phase4_v0_2_eval_unfiltered.h5`,
+  `target_scaler_phase4_v0_2.pkl`, `phase4_v0_2_equivalence.json`,
+  `phase4_v0_2_floor_analysis.json`이 포함되고 missing 0이다.
+  실제 upload는 사용자 승인 전이라 미실행 상태다.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 v0.1 카탈로그로 `--phase train` Kaggle CUDA 재학습 라운드 수행
+2. 사용자 승인 후 Phase 4 v0.2 Kaggle Dataset `--execute` 업로드 또는 Kaggle CUDA `--phase train` 재학습 라운드 수행
 3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
-5. Phase 5는 Phase 4 HDF5로 smoke training 후 정식 재학습 파이프라인으로 교체
+5. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결

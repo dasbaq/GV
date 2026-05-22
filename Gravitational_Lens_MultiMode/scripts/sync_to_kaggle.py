@@ -37,7 +37,17 @@ def round_files(round_name: str) -> list[Path]:
     equivalence = ROOT / "data" / "logs" / f"{round_name}_equivalence.json"
     if equivalence.exists():
         files.append(equivalence)
+    floor = ROOT / "data" / "logs" / f"{round_name}_floor_analysis.json"
+    if floor.exists():
+        files.append(floor)
     return files
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def metadata(owner: str, slug: str, round_name: str) -> dict:
@@ -81,8 +91,11 @@ def main() -> None:
         "round": args.round,
         "dataset": meta["id"],
         "staging_dir": str(staging_dir),
-        "files": [str(p) for p in files],
-        "missing": [str(p) for p in missing],
+        "files": [
+            {"source": display_path(p), "staged_as": p.name}
+            for p in files
+        ],
+        "missing": [display_path(p) for p in missing],
         "metadata": meta,
         "command": cmd,
         "auth_note": "Kaggle CLI expects ~/.kaggle/kaggle.json; never commit this file.",

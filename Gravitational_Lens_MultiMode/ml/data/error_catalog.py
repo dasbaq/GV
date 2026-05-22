@@ -33,6 +33,13 @@ TRUTH_MIN_IMAGE_SEPARATION_ARCSEC = 0.1
 TRUTH_MU_MAX = 0.98
 TRUTH_H0_APPROX_RANGE = (45.0, 90.0)
 TRUTH_DPHI_RATIO_RANGE = (0.5, 1.5)
+TRUTH_V0_2_MU_MAX = 0.9699
+TRUTH_V0_2_DPHI_RATIO_RANGE = (0.5878, 0.9201)
+TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC = 0.6598
+TRUTH_V0_2_DT_APPROX_MAX_DAYS = 444.7
+TRUTH_V0_2_I_OBS_SUM_MAX = 77.79
+TRUTH_V0_2_F_JOINT_ABSMAX_MAX = 3.408
+TRUTH_V0_2_MODE1_CORRECTION_ABSMAX = 32.27
 DEFAULT_RESAMPLE_BUDGET = 50
 
 
@@ -61,6 +68,7 @@ class CatalogConfig:
     reject_log_path: Path | None = None
     diagnosis_log_path: Path | None = None
     resample_budget: int | None = None
+    validity_filter: str = "v0_2"
 
 
 class DeflectionAdditiveTruthLens:
@@ -449,36 +457,43 @@ def _compute_pair(
     sep_truth = float(np.linalg.norm(theta_1_truth - theta_2_truth))
     dphi_ratio = float(phi_sie / phi_truth) if phi_truth > 0 else float("inf")
     image_shift = float(np.mean(np.linalg.norm(theta_truth[:2] - sie_images[:2], axis=1)))
-    invalid_reason = None
-    if not (np.isfinite(dt_true) and np.isfinite(h0_approx) and np.isfinite(phi_truth) and np.isfinite(phi_sie)):
-        invalid_reason = "nonfinite_values"
-    elif dt_true <= 0.0:
-        invalid_reason = "dt_true_nonpositive"
-    elif abs(mu_truth) >= TRUTH_MU_MAX:
-        invalid_reason = "mu_truth_ge_0p98"
-    elif sep_truth < TRUTH_MIN_IMAGE_SEPARATION_ARCSEC:
-        invalid_reason = "image_separation_lt_0p1"
-    elif not (TRUTH_H0_APPROX_RANGE[0] <= h0_approx <= TRUTH_H0_APPROX_RANGE[1]):
-        invalid_reason = "H0_approx_outside_45_90"
-    elif not (TRUTH_DPHI_RATIO_RANGE[0] <= dphi_ratio <= TRUTH_DPHI_RATIO_RANGE[1]):
-        invalid_reason = "dphi_ratio_outside_0p5_1p5"
-    if validate and invalid_reason is not None:
-        return {
-            "valid": False,
-            "reject_reason": invalid_reason,
-            "truth_solution": truth_solution,
-            "dt_true": float(dt_true),
-            "H0_approx": float(h0_approx),
-            "mu_truth": mu_truth,
-            "separation_truth": sep_truth,
-            "dphi_ratio": dphi_ratio,
-        }
 
     source_true = render_source_plane_gaussian(beta, config.image_size, config.pixel_scale)
     source_shift = 0.04 * kappa_ext * beta
     if include_nfw:
         source_shift = source_shift + 0.002 * np.log10(float(base["M200"]) / 1.0e12)
     source_approx = _source_plane_shifted(beta, source_shift, config.image_size, config.pixel_scale)
+    i_obs = _render_lensed_from_deflection(truth_lens, beta, config.image_size, config.pixel_scale)
+    validity_mode = _validity_mode(config)
+    invalid_reason = None
+    if validity_mode != "off":
+        invalid_reason = _validity_reject_reason(
+            dt_true=float(dt_true),
+            dt_approx=float(approx.dt_approx),
+            h0_true=h0,
+            h0_approx=float(h0_approx),
+            phi_truth=float(phi_truth),
+            phi_sie=float(phi_sie),
+            mu_truth=mu_truth,
+            separation_truth=sep_truth,
+            dphi_ratio=dphi_ratio,
+            i_obs_sum=float(np.sum(i_obs)),
+            apply_v0_2_filters=validity_mode == "v0_2",
+        )
+    if validate and invalid_reason is not None:
+        return {
+            "valid": False,
+            "reject_reason": invalid_reason,
+            "truth_solution": truth_solution,
+            "dt_true": float(dt_true),
+            "dt_approx": float(approx.dt_approx),
+            "H0_approx": float(h0_approx),
+            "mu_truth": mu_truth,
+            "separation_truth": sep_truth,
+            "dphi_ratio": dphi_ratio,
+            "I_obs_sum": float(np.sum(i_obs)),
+        }
+
     return {
         "valid": True,
         "approx": approx,
@@ -494,7 +509,7 @@ def _compute_pair(
         "D_delta_t": (1.0 + z_l) * reduced_time_delay_distance_h0_one(z_l, z_s) / h0,
         "S_true": source_true,
         "S_approx": source_approx,
-        "I_obs": _render_lensed_from_deflection(truth_lens, beta, config.image_size, config.pixel_scale),
+        "I_obs": i_obs,
         "theta_truth_1": theta_1_truth,
         "theta_truth_2": theta_2_truth,
         "theta_approx_1": approx_no_delay.theta_1,
@@ -526,6 +541,70 @@ def _distribution(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _validity_mode(config: CatalogConfig) -> str:
+    mode = str(config.validity_filter)
+    if mode not in {"v0_2", "v0_1", "off"}:
+        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_2, v0_1, or off.")
+    if mode == "v0_2" and not (config.include_nfw or config.include_kappa_ext):
+        return "v0_1"
+    return mode
+
+
+def _validity_reject_reason(
+    *,
+    dt_true: float,
+    dt_approx: float,
+    h0_true: float,
+    h0_approx: float,
+    phi_truth: float,
+    phi_sie: float,
+    mu_truth: float,
+    separation_truth: float,
+    dphi_ratio: float,
+    i_obs_sum: float | None = None,
+    f_joint_absmax: float | None = None,
+    apply_v0_2_filters: bool = True,
+) -> str | None:
+    """Return the first Phase 4 validity rejection reason, or ``None``.
+
+    Units: delays [days], H0 [km/s/Mpc], image separation [arcsec]. v0.1
+    generator validity remains intact, and v0.2 CUDA-stability p99 filters are
+    AND-composed after the v0.1 checks.
+    """
+
+    if not (np.isfinite(dt_true) and np.isfinite(h0_approx) and np.isfinite(phi_truth) and np.isfinite(phi_sie)):
+        return "nonfinite_values"
+    if dt_true <= 0.0:
+        return "dt_true_nonpositive"
+    if abs(mu_truth) >= TRUTH_MU_MAX:
+        return "mu_truth_ge_0p98"
+    if separation_truth < TRUTH_MIN_IMAGE_SEPARATION_ARCSEC:
+        return "image_separation_lt_0p1"
+    if not (TRUTH_H0_APPROX_RANGE[0] <= h0_approx <= TRUTH_H0_APPROX_RANGE[1]):
+        return "H0_approx_outside_45_90"
+    if not (TRUTH_DPHI_RATIO_RANGE[0] <= dphi_ratio <= TRUTH_DPHI_RATIO_RANGE[1]):
+        return "dphi_ratio_outside_0p5_1p5"
+    if not apply_v0_2_filters:
+        return None
+
+    correction = float(h0_true) - float(h0_approx)
+    if abs(mu_truth) > TRUTH_V0_2_MU_MAX:
+        return "mu_truth_gt_v0_2_p99"
+    if separation_truth < TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC:
+        return "image_separation_lt_v0_2_p01"
+    if not (TRUTH_V0_2_DPHI_RATIO_RANGE[0] <= dphi_ratio <= TRUTH_V0_2_DPHI_RATIO_RANGE[1]):
+        return "dphi_ratio_outside_v0_2_p01_p99"
+    if dt_approx > TRUTH_V0_2_DT_APPROX_MAX_DAYS:
+        return "dt_approx_gt_v0_2_p99"
+    if abs(correction) > TRUTH_V0_2_MODE1_CORRECTION_ABSMAX + 1.0e-9:
+        return "mode1_correction_abs_gt_v0_2_p99"
+    if i_obs_sum is not None and i_obs_sum > TRUTH_V0_2_I_OBS_SUM_MAX:
+        return "image_sum_gt_v0_2_p99"
+    if f_joint_absmax is not None and f_joint_absmax > TRUTH_V0_2_F_JOINT_ABSMAX_MAX:
+        return "lc_absmax_gt_v0_2_p99"
+    return None
+
+
 def _default_log_paths(output_path: Path, config: CatalogConfig) -> tuple[Path, Path, Path]:
     if config.log_path is not None:
         log_path = Path(config.log_path)
@@ -533,6 +612,8 @@ def _default_log_paths(output_path: Path, config: CatalogConfig) -> tuple[Path, 
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_label_distribution.json"
     elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_1.h5").resolve():
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_1_label_distribution.json"
+    elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_2.h5").resolve():
+        log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_2_label_distribution.json"
     else:
         log_path = output_path.with_suffix(".label_distribution.json")
     reject_path = (
@@ -555,11 +636,22 @@ def _resample_budget(config: CatalogConfig) -> int:
 
 
 def _empty_reject_log(config: CatalogConfig) -> dict[str, Any]:
+    validity_mode = _validity_mode(config)
     return {
         "n_systems_target": config.n_systems,
         "n_achieved": 0,
         "resample_budget_per_system": _resample_budget(config),
+        "validity_filter": validity_mode,
         "search_mode": "SIE-anchored search; truth-only extra images are not searched in v0.1",
+        "v0_2_thresholds": {
+            "mu_truth_abs_max": TRUTH_V0_2_MU_MAX,
+            "dphi_sie_over_truth_range": TRUTH_V0_2_DPHI_RATIO_RANGE,
+            "truth_image_separation_min_arcsec": TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC,
+            "dt_approx_max_days": TRUTH_V0_2_DT_APPROX_MAX_DAYS,
+            "I_obs_sum_max": TRUTH_V0_2_I_OBS_SUM_MAX,
+            "F_joint_absmax_max": TRUTH_V0_2_F_JOINT_ABSMAX_MAX,
+            "mode1_H0_correction_absmax": TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
+        },
         "dedupe_arcsec": TRUTH_IMAGE_DEDUPE_ARCSEC,
         "residual_arcsec_threshold": TRUTH_ROOT_RESIDUAL_ARCSEC,
         "condition_number_max": TRUTH_ROOT_COND_MAX,
@@ -578,6 +670,8 @@ def _record_reject(log: dict[str, Any], reason: str) -> None:
 
 def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rng = np.random.default_rng(config.seed)
+    lc_rng = np.random.default_rng(config.seed + 1000)
+    validity_mode = _validity_mode(config)
     pairs: list[dict[str, Any]] = []
     bases: list[dict[str, Any]] = []
     reject_log = _empty_reject_log(config)
@@ -588,6 +682,36 @@ def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], l
             base = _sample_base_system(rng)
             pair = _compute_pair(base, config, config.include_nfw, config.include_kappa_ext, validate=True)
             if pair.get("valid"):
+                lc = QuasarLightCurve(seed=int(lc_rng.integers(0, 2**31 - 1))).generate(
+                    n_epochs=config.n_epochs,
+                    total_days=1000.0,
+                    survey="ztf",
+                )
+                joint, noise = _joint_curve(lc["flux"], lc["flux_err"], lc["t_obs"], pair["dt_true"], pair["mu_true"])
+                sigma_curve = _sigma_curve(lc_rng, config.sigma_curve_size, pair["dt_true"])
+                lc_invalid_reason = None
+                if validity_mode != "off":
+                    lc_invalid_reason = _validity_reject_reason(
+                        dt_true=float(pair["dt_true"]),
+                        dt_approx=float(pair["approx"].dt_approx),
+                        h0_true=float(pair["H0_true"]),
+                        h0_approx=float(pair["approx"].H0_approx),
+                        phi_truth=float(pair["truth_fermat_potential"]),
+                        phi_sie=float(pair["approx"].fermat_potential),
+                        mu_truth=float(pair["mu_true"]),
+                        separation_truth=float(pair["separation_truth"]),
+                        dphi_ratio=float(pair["dphi_ratio"]),
+                        i_obs_sum=float(np.sum(pair["I_obs"])),
+                        f_joint_absmax=float(np.max(np.abs(joint))),
+                        apply_v0_2_filters=validity_mode == "v0_2",
+                    )
+                if lc_invalid_reason is not None:
+                    _record_reject(reject_log, lc_invalid_reason)
+                    continue
+                pair["F_joint"] = joint
+                pair["sigma_noise"] = noise
+                pair["t_obs"] = lc["t_obs"]
+                pair["sigma_curve"] = sigma_curve
                 bases.append(base)
                 pairs.append(pair)
                 reject_log["attempts_per_accepted"].append(attempt)
@@ -605,7 +729,7 @@ def _collect_valid_pairs(config: CatalogConfig) -> tuple[list[dict[str, Any]], l
         if not accepted:
             reject_log["n_achieved"] = len(pairs)
             raise RuntimeError(
-                f"Phase 4 v0.1 resample budget exceeded at system {system_idx}; "
+                f"Phase 4 resample budget exceeded at system {system_idx}; "
                 f"n_systems_target={config.n_systems}, n_achieved={len(pairs)}"
             )
     reject_log["n_achieved"] = len(pairs)
@@ -673,13 +797,14 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
     """
 
     output_path = Path(output_path)
+    validity_mode = _validity_mode(config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log_path, reject_path, diagnosis_path = _default_log_paths(output_path, config)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     reject_path.parent.mkdir(parents=True, exist_ok=True)
     diagnosis_path.parent.mkdir(parents=True, exist_ok=True)
     bases, pairs, reject_log = _collect_valid_pairs(config)
-    rng = np.random.default_rng(config.seed + 1000)
+    target_rng = np.random.default_rng(config.seed + 2000)
     corrections = np.array([p["H0_true"] - p["approx"].H0_approx for p in pairs], dtype=np.float32)
     n = config.n_systems
 
@@ -694,21 +819,10 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
     psf_base /= psf_base.sum()
     psf[:] = psf_base
 
-    f_joint = np.zeros((n, config.n_epochs), dtype=np.float32)
-    sigma_noise = np.zeros_like(f_joint)
-    t_obs = np.zeros_like(f_joint)
-    sigma_curves = np.zeros((n, config.sigma_curve_size), dtype=np.float32)
-    for i, pair in enumerate(pairs):
-        lc = QuasarLightCurve(seed=int(rng.integers(0, 2**31 - 1))).generate(
-            n_epochs=config.n_epochs,
-            total_days=1000.0,
-            survey="ztf",
-        )
-        joint, noise = _joint_curve(lc["flux"], lc["flux_err"], lc["t_obs"], pair["dt_true"], pair["mu_true"])
-        f_joint[i] = joint
-        sigma_noise[i] = noise
-        t_obs[i] = lc["t_obs"]
-        sigma_curves[i] = _sigma_curve(rng, config.sigma_curve_size, pair["dt_true"])
+    f_joint = np.stack([p["F_joint"] for p in pairs]).astype(np.float32)
+    sigma_noise = np.stack([p["sigma_noise"] for p in pairs]).astype(np.float32)
+    t_obs = np.stack([p["t_obs"] for p in pairs]).astype(np.float32)
+    sigma_curves = np.stack([p["sigma_curve"] for p in pairs]).astype(np.float32)
 
     with h5py.File(output_path, "w") as f:
         meta = f.create_group("metadata")
@@ -716,8 +830,11 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["n_systems"] = n
         meta.attrs["random_seed"] = config.seed
         meta.attrs["full_truth_available"] = True
-        meta.attrs["generator_version"] = "phase4-v0.1"
+        meta.attrs["generator_version"] = "phase4-v0.2"
         meta.attrs["truth_model"] = config.truth_model
+        meta.attrs["validity_filter"] = (
+            "off_for_eval; root convergence required" if validity_mode == "off" else validity_mode
+        )
         meta.attrs["truth_deflection"] = "alpha_SIE + alpha_NFW + kappa_ext * theta"
         meta.attrs["truth_image_solver"] = "scipy.optimize.root(theta - alpha_truth(theta) - beta), seeded by SIE images"
         meta.attrs["truth_image_search_mode"] = "SIE-anchored search; truth-only extra images are not searched in v0.1"
@@ -728,6 +845,14 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["correction_sign"] = "true_minus_approx"
         meta.attrs["incompatible_with_v2_scalers_checkpoints"] = True
         meta.attrs["image_size_note"] = "Phase 4 v0 uses 64 with pixel_scale=0.1; v1 should return to 128."
+        meta.attrs["v0_2_mu_truth_abs_max"] = TRUTH_V0_2_MU_MAX
+        meta.attrs["v0_2_dphi_sie_over_truth_min"] = TRUTH_V0_2_DPHI_RATIO_RANGE[0]
+        meta.attrs["v0_2_dphi_sie_over_truth_max"] = TRUTH_V0_2_DPHI_RATIO_RANGE[1]
+        meta.attrs["v0_2_truth_image_separation_min_arcsec"] = TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC
+        meta.attrs["v0_2_dt_approx_max_days"] = TRUTH_V0_2_DT_APPROX_MAX_DAYS
+        meta.attrs["v0_2_I_obs_sum_max"] = TRUTH_V0_2_I_OBS_SUM_MAX
+        meta.attrs["v0_2_F_joint_absmax_max"] = TRUTH_V0_2_F_JOINT_ABSMAX_MAX
+        meta.attrs["v0_2_mode1_H0_correction_absmax"] = TRUTH_V0_2_MODE1_CORRECTION_ABSMAX
 
         params = f.create_group("params")
         for key in ("H0", "z_lens", "z_source", "sigma_v", "M200", "concentration", "q"):
@@ -792,7 +917,7 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         pert.create_dataset("kappa_ext_enabled", data=np.full(n, config.include_kappa_ext, dtype=np.bool_))
 
         f.create_dataset("sigma_curve", data=sigma_curves)
-        f.create_dataset("target_mode", data=rng.integers(1, 4, n, dtype=np.int32))
+        f.create_dataset("target_mode", data=target_rng.integers(1, 4, n, dtype=np.int32))
 
     def _toggle_corrections(nfw_on: bool, kappa_on: bool) -> np.ndarray:
         vals: list[float] = []
@@ -824,9 +949,20 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         "v2_6_baseline": baseline,
         "phase4_v0_std": float(np.std(corrections)),
         "phase4_v0_1_std": float(np.std(corrections)),
+        "phase4_v0_2_std": float(np.std(corrections)),
         "correction_sign": "true_minus_approx",
+        "validity_filter": validity_mode,
         "image_size": config.image_size,
         "pixel_scale": config.pixel_scale,
+        "v0_2_thresholds": {
+            "mu_truth_abs_max": TRUTH_V0_2_MU_MAX,
+            "dphi_sie_over_truth_range": TRUTH_V0_2_DPHI_RATIO_RANGE,
+            "truth_image_separation_min_arcsec": TRUTH_V0_2_MIN_IMAGE_SEPARATION_ARCSEC,
+            "dt_approx_max_days": TRUTH_V0_2_DT_APPROX_MAX_DAYS,
+            "I_obs_sum_max": TRUTH_V0_2_I_OBS_SUM_MAX,
+            "F_joint_absmax_max": TRUTH_V0_2_F_JOINT_ABSMAX_MAX,
+            "mode1_H0_correction_absmax": TRUTH_V0_2_MODE1_CORRECTION_ABSMAX,
+        },
         "image_shift_arcsec": _distribution(np.asarray([p["image_shift_arcsec"] for p in pairs], dtype=float)),
         "root_residual_norm": {
             "median": reject_log["root_residual_norm_median"],
@@ -855,8 +991,28 @@ def main() -> None:
     parser.add_argument("--n-systems", type=int, default=50)
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "data" / "mock" / "phase4_v0.h5")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--log-path", type=Path, default=None)
+    parser.add_argument("--reject-log-path", type=Path, default=None)
+    parser.add_argument("--diagnosis-log-path", type=Path, default=None)
+    parser.add_argument("--resample-budget", type=int, default=None)
+    parser.add_argument("--validity-filter", choices=("v0_2", "v0_1", "off"), default="v0_2")
+    parser.add_argument("--eval-role", default=None)
     args = parser.parse_args()
-    summary = build_phase4_catalog(args.output, CatalogConfig(n_systems=args.n_systems, seed=args.seed))
+    summary = build_phase4_catalog(
+        args.output,
+        CatalogConfig(
+            n_systems=args.n_systems,
+            seed=args.seed,
+            log_path=args.log_path,
+            reject_log_path=args.reject_log_path,
+            diagnosis_log_path=args.diagnosis_log_path,
+            resample_budget=args.resample_budget,
+            validity_filter=args.validity_filter,
+        ),
+    )
+    if args.eval_role is not None:
+        with h5py.File(args.output, "a") as f:
+            f["metadata"].attrs["eval_role"] = args.eval_role
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

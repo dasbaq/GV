@@ -3,6 +3,24 @@
 
 ---
 
+## [2026-05-22] Phase 1 observation-format Δt extraction MOCK
+
+원본 system6 실측 파일이 없어 `ObservedLensSystem.light_curves` 포맷을 흉내낸 합성
+unresolved light curve로 smoke 검증했다. 실측 benchmark 판정은 MOCK/SKIP로 유지한다.
+
+| 항목 | 결과 | 기준 | 판정 |
+|------|------|------|------|
+| 입력 | synthetic system6-format light curve | 실측 없음 | MOCK/SKIP |
+| 주입 Δt | `24.140000 days` | — | — |
+| 회복 Δt_obs | `24.050000 days` | — | — |
+| Δt 오차 | `0.090000 days` | `< 0.15 days` | MOCK PASS |
+| μ 추정 | `0.100000` | `abs(μ) < 1` | PASS |
+| Σ minimum | `-0.800088` | configured conservative smoke threshold `-0.7` | PASS |
+| confidence | `conservative` | not rejected | PASS |
+
+검증 명령:
+- `pytest -q tests/test_delay_extraction_obs.py` → 3 passed.
+
 ## [2026-05-04] Phase 3 v2.6 infra equivalence + bootstrap
 
 ### Infra Equivalence
