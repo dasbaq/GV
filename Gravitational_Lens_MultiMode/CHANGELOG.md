@@ -3,6 +3,12 @@
 
 ---
 
+## [2026-05-22] — Phase 5 Mode 1 ML 보정 결합 (관측 → H0_corrected)
+- `inversion/obs_to_features.py` 추가: 스펙 dict → MultiModalErrorCorrector Mode 1 입력 텐서. `ml/training/dataset.py::__getitem__`의 Mode 1 경로(lc/params/sigma_curve/image/use_image, 정규화·one-hot·scaler)를 그대로 재현. `system_spec_from_hdf5`, `load_corrector`, `load_target_scaler` 헬퍼 포함. truth-side 키 미접근.
+- `pipelines/run_mode1.py`: `_apply_ml_correction`을 실제 구현(stub 제거) — checkpoint+scaler 로드 → target_mode=1 forward → `correction = pred*scale + mean`, `sigma = exp(log_sigma)*scale`, `H0_corrected = H0_approx + correction`. `_feature_spec_from_phase4_hdf5`로 입력 HDF5의 image/LC/sigma 그룹 + 해석 파이프라인 param(H0_approx/dt_obs/SIE fit)으로 스펙 구성. Phase4 inference 그룹 부재 시 graceful skip. `--correction-scaler`/`--correction-config` CLI 추가(기본 v0.4).
+- `tests/test_run_mode1_correction.py`: (a) 어댑터==dataset 출력 일치, (b) v0.4 checkpoint로 보정 closed-form, (c) graceful skip. `pytest -q tests/test_run_mode1_correction.py tests/test_run_mode1_e2e.py tests/test_losses_amp_safe.py` → 9 passed.
+- v0.4 데모(검증): H0_approx 60.6/31.4/21.5 → H0_corrected 72.4/73.5/73.0 (H0_true 74.0/68.9/63.9). 실관측 원본 데이터는 부재라 Phase4-HDF5/합성으로만 검증(MOCK).
+
 ## [2026-05-22] — Phase 4 v0.4 Kaggle full run: selection bias·NaN 해결 + acceptance 재교정
 - v0.4 CUDA full run(AMP on): NaN 0(19ep, early-stop, best ep11). **selection bias 소멸** — unfiltered/filtered RMSE 비율 `0.83`(<=2.5, leak **false**), unfiltered RMSE `14.5→4.81`, r `0.28→0.59`, coverage `0.21→0.695`. SSIM fp32 + 물리-validity-only 설계가 의도대로 작동.
 - 남은 불합격은 filtered absolute band 2개(RMSE CI upper `6.92>4.862`, r `0.33<0.85`)뿐인데, 이는 성능 문제가 아니라 band가 v0.2 truncated easy-subset 기준이라 무효한 것. filtered==unfiltered 분포가 되어 filtered val(n=50)이 전체 난이도를 정직하게 평가(unfiltered n=200은 r `0.59`).

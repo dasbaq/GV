@@ -53,12 +53,29 @@ def _mock_flag(path: Path, observation: ObservedLensSystem) -> bool:
         return bool(observation.name and "mock" in observation.name.lower())
 
 
+_DEFAULT_CORRECTION_CONFIG = Path(__file__).resolve().parent.parent / "config" / "ml.yaml"
+_DEFAULT_CORRECTION_SCALER = (
+    Path(__file__).resolve().parent.parent / "data" / "target_scaler_phase4_v0_4.pkl"
+)
+
+
 def _apply_ml_correction(
     h0_approx: float,
     *,
     apply_correction: bool,
     checkpoint: str | Path | None,
+    feature_spec: dict[str, Any] | None,
+    scaler_path: str | Path | None,
+    config_path: str | Path | None,
 ) -> tuple[float, dict[str, Any]]:
+    """Apply the Phase 4/5 Mode 1 corrector: H0_corrected = H0_approx + correction.
+
+    Loads the trained MultiModalErrorCorrector and target scaler, builds the
+    Mode 1 input tensors from ``feature_spec`` (same construction as the training
+    dataset), runs a target_mode=1 forward, and inverse-transforms the scaled
+    prediction. Units: H0 [km/s/Mpc]. SIE 표준 근사 가정은 corrector 학습 시와 동일.
+    """
+
     if not apply_correction:
         return h0_approx, {"applied": False, "reason": "correction disabled"}
     if checkpoint is None:
@@ -69,11 +86,106 @@ def _apply_ml_correction(
             "applied": False,
             "reason": f"correction skipped: checkpoint not found ({ckpt_path})",
         }
-    return h0_approx, {
-        "applied": False,
+    if feature_spec is None:
+        return h0_approx, {
+            "applied": False,
+            "checkpoint": str(ckpt_path),
+            "reason": "correction skipped: image/sigma_curve feature inputs unavailable in input",
+        }
+
+    import torch
+
+    from inversion.obs_to_features import (
+        build_corrector_inputs,
+        load_corrector,
+        load_target_scaler,
+    )
+
+    cfg_path = Path(config_path) if config_path is not None else _DEFAULT_CORRECTION_CONFIG
+    scl_path = Path(scaler_path) if scaler_path is not None else _DEFAULT_CORRECTION_SCALER
+    if not scl_path.exists():
+        return h0_approx, {
+            "applied": False,
+            "checkpoint": str(ckpt_path),
+            "reason": f"correction skipped: scaler not found ({scl_path})",
+        }
+
+    model, cfg = load_corrector(ckpt_path, cfg_path)
+    scaler = load_target_scaler(scl_path)
+    inputs = build_corrector_inputs(
+        feature_spec,
+        param_norm=cfg["data"]["param_normalization"],
+        image_size=int(cfg["data"]["image_size"]),
+        max_len=int(cfg["data"]["max_lc_len"]),
+        sigma_curve_size=int(cfg["data"]["sigma_curve_size"]),
+        approx_level=1,
+        target_mode=1,
+    )
+    with torch.no_grad():
+        out = model(**inputs)
+    m1 = out["mode1"]
+    s = scaler["mode1"]
+    scale = float(s["scale"])
+    mean = float(s["mean"])
+    correction = float(m1["h0_correction"].item()) * scale + mean
+    sigma = float(torch.exp(m1["log_sigma"]).item()) * scale
+    h0_corrected = float(h0_approx) + correction
+    return h0_corrected, {
+        "applied": True,
         "checkpoint": str(ckpt_path),
-        "reason": "correction skipped: Phase 5 ML inference hook is not implemented yet",
+        "scaler": str(scl_path),
+        "correction": correction,
+        "sigma": sigma,
     }
+
+
+def _feature_spec_from_phase4_hdf5(
+    path: Path,
+    system_index: int,
+    *,
+    h0_approx: float,
+    dt_approx: float,
+    sie_fit: dict[str, Any],
+    z_lens: float,
+    z_source: float,
+) -> dict[str, Any] | None:
+    """Build a corrector feature spec from a Phase 4-schema HDF5 system.
+
+    Image/LC/sigma_curve inputs are read from the HDF5; the inference-side
+    parameter fields are overridden with the analytic Mode 1 outputs that this
+    run produced (H0_approx, dt_approx, fitted SIE σ_v/q/θ_E). Returns ``None``
+    if the input lacks the Phase 4 inference groups (e.g. a minimal observation
+    file), so correction degrades gracefully.
+    """
+
+    with h5py.File(path, "r") as h5:
+        needed = ("images/I_obs", "approx_outputs/S_approx", "light_curves/F_joint")
+        if not all(key in h5 for key in needed):
+            return None
+        spec = {
+            "F_joint": np.asarray(h5["light_curves/F_joint"][system_index], dtype=np.float32),
+            "sigma_noise": np.asarray(h5["light_curves/sigma_noise"][system_index], dtype=np.float32),
+            "n_epochs": int(h5["light_curves/n_epochs"][system_index]),
+            "I_obs": np.asarray(h5["images/I_obs"][system_index], dtype=np.float32),
+            "S_approx": np.asarray(h5["approx_outputs/S_approx"][system_index], dtype=np.float32),
+            "sigma_curve": (
+                np.asarray(h5["sigma_curve"][system_index], dtype=np.float32)
+                if "sigma_curve" in h5
+                else None
+            ),
+        }
+    spec.update(
+        {
+            "H0_approx": float(h0_approx),
+            "dt_approx": float(dt_approx),
+            "sigma_v": float(sie_fit["sigma_v"]),
+            "q": float(sie_fit["q"]),
+            "theta_E": float(sie_fit["theta_E"]),
+            "z_lens": float(z_lens),
+            "z_source": float(z_source),
+        }
+    )
+    return spec
 
 
 def run_mode1(
@@ -83,6 +195,8 @@ def run_mode1(
     approx_level: int = 0,
     apply_correction: bool = False,
     correction_checkpoint: str | Path | None = None,
+    correction_scaler: str | Path | None = None,
+    correction_config: str | Path | None = None,
     delay_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run observation-to-H0 Mode 1 inversion.
@@ -122,10 +236,24 @@ def run_mode1(
         n_bootstrap=200,
     )
     h0_approx = float(h0["H0"])
+    feature_spec = None
+    if apply_correction and correction_checkpoint is not None and Path(correction_checkpoint).exists():
+        feature_spec = _feature_spec_from_phase4_hdf5(
+            path,
+            system_index,
+            h0_approx=h0_approx,
+            dt_approx=float(delay["dt_obs_days"]),
+            sie_fit=sie_fit,
+            z_lens=observation.z_lens,
+            z_source=observation.z_source,
+        )
     h0_corrected, correction = _apply_ml_correction(
         h0_approx,
         apply_correction=apply_correction,
         checkpoint=correction_checkpoint,
+        feature_spec=feature_spec,
+        scaler_path=correction_scaler,
+        config_path=correction_config,
     )
 
     result = {
@@ -166,6 +294,8 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--approx-level", type=int, default=0, choices=(0, 1, 2))
     parser.add_argument("--apply-correction", action="store_true")
     parser.add_argument("--correction-checkpoint")
+    parser.add_argument("--correction-scaler", help="target scaler pkl (default v0.4)")
+    parser.add_argument("--correction-config", help="ML config yaml (default config/ml.yaml)")
     parser.add_argument("--delay-config", help="Optional JSON config for Phase 1 delay extraction")
     parser.add_argument("--output", required=True, help="Output JSON path")
     args = parser.parse_args(argv)
@@ -176,6 +306,8 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         approx_level=args.approx_level,
         apply_correction=args.apply_correction,
         correction_checkpoint=args.correction_checkpoint,
+        correction_scaler=args.correction_scaler,
+        correction_config=args.correction_config,
         delay_config=_load_json(args.delay_config),
     )
     out = Path(args.output)

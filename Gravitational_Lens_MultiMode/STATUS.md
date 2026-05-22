@@ -92,7 +92,8 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [x] inversion/delay_extraction.py   — 실관측 포맷 광도곡선 → Δt_obs 추출
 [x] inversion/sie_fit.py            — 관측 상 위치 → SIE fit → Δφ 산출
 [x] inversion/mode1_h0.py          — H₀ 역산 솔버 단위/import 정합성 수정 (Δφ [rad²])
-[x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ JSON CLI
+[x] inversion/obs_to_features.py    — 관측/스펙 → corrector 입력 텐서 (dataset 재현)
+[x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ + ML 보정(--apply-correction) JSON CLI
 [ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
 [ ] inversion/mode3_wrapper.py     — 기존 Mode 3 솔버 호출 wrapper (코드 수정 금지)
 ```
@@ -309,6 +310,13 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   `data/logs/phase4_v0_4_imgres_h0_eval{,_unfiltered}.json`, `..._long_history.json`,
   `..._infra_equivalence.json`. eval 재확인: filtered RMSE `5.81`/r `0.33`, unfiltered RMSE
   `4.81`/r `0.59`, no-correction `29.63`/`33.25`. 이 checkpoint를 Phase 5 실관측 보정에 사용.
+- Phase 5 Mode 1 ML 보정 결합 완료: `inversion/obs_to_features.py`(스펙→corrector 입력 텐서,
+  dataset.__getitem__ Mode1 재현) + `pipelines/run_mode1.py --apply-correction`(checkpoint+scaler
+  로드 → target_mode=1 forward → scaler 역변환 → `H0_corrected = H0_approx + correction`, σ 산출).
+  `tests/test_run_mode1_correction.py`: (a) 어댑터가 dataset 출력과 일치, (b) v0.4 checkpoint로
+  보정 closed-form 일치, (c) feature 부재 시 graceful skip — 9 passed(e2e/losses 포함).
+  v0.4 데모: H0_approx 60.6/31.4/21.5 → H0_corrected 72.4/73.5/73.0 (H0_true 74.0/68.9/63.9).
+  실관측 원본 데이터는 여전히 부재라 합성/Phase4-HDF5로만 검증(MOCK).
 
 ---
 
