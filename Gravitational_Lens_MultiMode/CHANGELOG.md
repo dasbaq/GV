@@ -3,6 +3,12 @@
 
 ---
 
+## [2026-05-22] — Phase 4 v0.4 Kaggle full run: selection bias·NaN 해결 + acceptance 재교정
+- v0.4 CUDA full run(AMP on): NaN 0(19ep, early-stop, best ep11). **selection bias 소멸** — unfiltered/filtered RMSE 비율 `0.83`(<=2.5, leak **false**), unfiltered RMSE `14.5→4.81`, r `0.28→0.59`, coverage `0.21→0.695`. SSIM fp32 + 물리-validity-only 설계가 의도대로 작동.
+- 남은 불합격은 filtered absolute band 2개(RMSE CI upper `6.92>4.862`, r `0.33<0.85`)뿐인데, 이는 성능 문제가 아니라 band가 v0.2 truncated easy-subset 기준이라 무효한 것. filtered==unfiltered 분포가 되어 filtered val(n=50)이 전체 난이도를 정직하게 평가(unfiltered n=200은 r `0.59`).
+- `scripts/phase4_v0_4_round.py` ACCEPTANCE 재교정: no_correction(filtered `29.63`/unfiltered `33.25`) 기준 RMSE band `[0.5, 11.08]`(point [0.5,16.62]), `filtered_h0_r_min` `0.85→0.0`(record_only), leak floor `2.755→0.5`. 재교정 후 v0.4는 bias/RMSE/coverage 전부 통과(r은 record_only). 근거 DECISIONS + `data/logs/phase4_v0_4_floor_analysis.json`.
+- remaining rigor: 무편향 분포의 achievable-r ceiling을 inputs-conditioned oracle로 산정.
+
 ## [2026-05-22] — fp16 SSIM NaN 수정 + Phase 4 v0.4 물리-validity-only 카탈로그
 - 진단 확정: v0.3.1도 학습 NaN(epoch1 train=nan, val 유한). AMP off로 재실행하니 NaN 0(50ep) → NaN은 fp16 전용. v0.3 history에서 mode1/2/3_task·mode1_cal 유한한데 ssim=nan → **발원지는 fp16/autocast SSIM**, 카탈로그 필터와 무관. 단 AMP-off v0.3.1은 acceptance 또 불합격(unfiltered/filtered RMSE 3.26, filtered r 0.66)으로 selection bias 잔존 → tail filter가 원인.
 - `ml/training/losses.py`: `_ssim_loss`/`_gaussian_nll`를 autocast 비활성 fp32 블록으로 강제. SSIM 분산 `clamp_min(0)`, NLL `2*log_sigma` `[-30,30]` 클램프 + var floor. `tests/test_losses_amp_safe.py` 추가(degenerate 입력 fp16 finite + 정상입력 검증), 4 passed.

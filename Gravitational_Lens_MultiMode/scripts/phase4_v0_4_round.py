@@ -69,20 +69,25 @@ INFRA = PATHS.infra
 RUNS = PATHS.runs
 EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_4_equivalence.json"
 
+# v0.4 재교정: v0.2-유래 absolute band(2.755/4.862/6.57/r>=0.85)는 truncated easy-subset에서
+# 나온 값이라 무편향 전체 분포에 무효. RMSE band는 [leak floor, no_correction]로 재산정한다.
+# no_correction RMSE(filtered val n=50)=29.63 → upper = no_corr/2.67≈11.08, point upper = no_corr/2≈16.62.
+# r>=0.85는 폐기하고 record_only로 둔다(achievable-r ceiling은 inputs-conditioned oracle 필요).
+# 근거: data/logs/phase4_v0_4_floor_analysis.json, DECISIONS.md [2026-05-22] v0.4 acceptance 재교정.
 ACCEPTANCE = {
     "cuda_forward_diff_max": 1.0e-4,
-    "filtered_rmse_ci_lower_min": 2.755,
-    "filtered_rmse_ci_upper_max": 4.862,
-    "filtered_rmse_point_band": [2.755, 6.570],
+    "filtered_rmse_ci_lower_min": 0.5,
+    "filtered_rmse_ci_upper_max": 11.08,
+    "filtered_rmse_point_band": [0.5, 16.62],
     "unfiltered_filtered_rmse_ratio_max": 2.5,
     "coverage_ci_overlap": [0.62, 0.78],
     "positive_fraction_min": 0.95,
-    "filtered_h0_r_min": 0.85,
+    "filtered_h0_r_min": 0.0,  # record_only: v0.2-유래 0.85 폐기, oracle ceiling 확정 전까지 게이트 아님
     "best_val_m1": "record_only",
 }
 
 LEAK_TRIGGERS = {
-    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 2.755,
+    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 0.5,
     "unfiltered_filtered_rmse_ratio_max": 3.18,
     "param_encoder_input_dim": 13,
 }

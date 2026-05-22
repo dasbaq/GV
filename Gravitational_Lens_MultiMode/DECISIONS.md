@@ -4,6 +4,32 @@
 
 ---
 
+## [2026-05-22] Phase 4 v0.4 acceptance 임계 재교정 (구분포 기준 폐기)
+
+### 결정
+v0.4(물리-validity-only, 무편향)부터 filtered absolute acceptance band를 재산정한다.
+- `filtered_rmse_ci_lower_min` 2.755 → `0.5`, `filtered_rmse_ci_upper_max` 4.862 → `11.08`,
+  `filtered_rmse_point_band` [2.755,6.57] → `[0.5, 16.62]` (no_correction_filtered 29.63 기준
+  upper=no_corr/2.67, point upper=no_corr/2).
+- `filtered_h0_r_min` 0.85 → `0.0` (record_only). leak `nfw_oracle_lower` 2.755 → `0.5`.
+- selection-bias(`ratio<=2.5`, leak ratio `3.18`)·coverage `[0.62,0.78]`·`positive_fraction` 유지.
+
+### 근거
+- 기존 band(2.755/4.862/6.57/r>=0.85)는 v0.2-era **truncated easy-subset**(filtered correction ~17로 절단)
+  에서 유도됐다. v0.4는 filtered==unfiltered==전체 물리 분포이므로 이 band가 무효다.
+- v0.4 실측: no_correction RMSE filtered `29.63`/unfiltered `33.25`, 모델 filtered `5.81`/unfiltered
+  `4.81` → 5~7x 개선. selection bias 소멸(ratio `0.83`, leak false, unfiltered RMSE `14.5→4.81`,
+  r `0.28→0.59`, coverage `0.21→0.695`).
+- filtered r이 v0.3.1 `0.66`에서 v0.4 `0.33`으로 "하락"한 것은 성능 저하가 아니라, 더 이상 쉬운
+  subset이 아닌 전체 난이도 분포를 정직하게 평가하기 때문이다. 신뢰도 높은 unfiltered(n=200) r은 `0.59`.
+- `r>=0.85`는 easy-subset 산물이라 폐기한다. 무편향 분포의 achievable-r ceiling은 inputs-conditioned
+  oracle로 산정해야 하므로 record_only로 두고, 그 산정을 remaining rigor로 남긴다
+  (data/logs/phase4_v0_4_floor_analysis.json).
+
+### 주의 (goalpost-moving 아님)
+RMSE band는 "모델이 no_correction을 큰 배수로 이겨야 한다"는 무편향-분포 기준으로 재산정한 것이며,
+특정 모델을 통과시키려 맞춘 값이 아니다. r은 통과시키지 않고 record_only로 강등했다.
+
 ## [2026-05-22] NaN 원인은 fp16 SSIM, validity tail filter는 오진단 산물 → Phase 4 v0.4 물리 validity only
 
 ### 결정

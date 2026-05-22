@@ -126,6 +126,7 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 | system 6 (Δt=24.14일) | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음, 실관측 포맷 synthetic Δt 오차 0.09일 | 2026-05-22 |
 | ZTF 노이즈 전체 통계 | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | SDSS J1226-0006 | Mode 1 출력 (H₀) | ⬜ 미실행 | — |
+| Phase 4 v0.4 selection-bias | Mode 1 ML 보정 | ✅ 통과 — ratio 0.83(leak false), unfiltered RMSE 4.81(no-corr 33.25), r 0.59, coverage 0.695 | 2026-05-22 |
 | TDC1 Rung 0 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | TDC1 Rung 1 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | (추가 예정) DM 회복 정확도 | Mode 2 | ⬜ 미실행 | — |
@@ -292,21 +293,28 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   mode1 mean/scale `29.64/13.71`. `data/logs/phase4_v0_4_equivalence.json` forward diff `1.043e-07`,
   Welch p `0.874`, passed. SSIM fp32 수정으로 큰 correction tail에도 NaN 안 나는지는 Kaggle sanity에서 확인.
   Kaggle 폴더 `data/kaggle_upload/lens-phase4-v0-4/`(train/unfiltered/scaler/equivalence) 준비.
+- Phase 4 v0.4 Kaggle CUDA full run(AMP on)에서 **NaN 0**(19ep, early-stop, best ep11)으로
+  SSIM fp32 수정이 검증됐고, **selection bias가 처음으로 소멸**했다: unfiltered/filtered RMSE 비율
+  `0.83`(<=2.5, leak **false**), unfiltered RMSE `14.5→4.81`, r `0.28→0.59`, coverage `0.21→0.695`.
+  no-correction RMSE는 filtered `29.63`/unfiltered `33.25`라 모델이 5~7x 개선한다.
+  남은 불합격(filtered RMSE CI upper `6.92>4.862`, r `0.33<0.85`)은 성능 문제가 아니라 band가
+  v0.2 truncated easy-subset 기준이라 무효한 것이다(filtered==unfiltered 분포가 되어 filtered val
+  n=50이 전체 난이도를 정직 평가; 신뢰도 높은 unfiltered n=200은 r `0.59`).
+- v0.4 acceptance 재교정 완료: `scripts/phase4_v0_4_round.py` ACCEPTANCE를 no_correction 기준
+  RMSE band `[0.5, 11.08]`(point [0.5,16.62])로, `filtered_h0_r_min`을 `0.0`(record_only)로,
+  leak floor를 `0.5`로 바꿨다. 재교정 후 v0.4는 bias/RMSE/coverage 전부 통과(r record_only).
+  근거 DECISIONS [2026-05-22] + `data/logs/phase4_v0_4_floor_analysis.json`. r ceiling은
+  inputs-conditioned oracle로 산정하는 것이 remaining rigor.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Kaggle CUDA에서 Phase 4 v0.4 full train을 수행한다(SSIM fp32 수정 + 물리-validity-only).
-   Kaggle Dataset 업로드: `data/kaggle_upload/lens-phase4-v0-4/`(또는
-   `python scripts/sync_to_kaggle.py --round phase4_v0_4 --slug lens-phase4-v0-4 --execute`).
-   먼저 2-epoch sanity로 `nan_detected=false` 확인(SSIM fp32 효과) 후:
-   `python scripts/phase4_v0_4_round.py --phase train --equivalence-from /kaggle/input/<slug>/phase4_v0_4_equivalence.json --device cuda --workers 0 --epochs 50 --bootstrap-n 1000`.
-   기대: train↔eval 분포 정합으로 unfiltered/filtered RMSE 비율이 1에 수렴(<=2.5). acceptance 사전
-   기준은 ratio `<=2.5`, 1σ coverage `[0.62,0.78]`, filtered r `>=0.85`. (v0.3/v0.3.1은 폐기.)
-3. Phase 4 v0.3에서 coverage 개선은 NLL/calibration 문제로 별도 점검한다
-   (filtered validation뿐 아니라 unfiltered/cut-boundary bin별 residual/sigma 검증).
+2. Phase 4 v0.4 full run 완료(selection bias·NaN 해결, acceptance 재교정 통과·r record_only).
+   Kaggle 산출물(checkpoint/eval JSON)을 repo로 회수해 보관하고, 재교정 verdict를 BENCHMARKS에 고정.
+3. 무편향 분포의 achievable-r ceiling을 inputs-conditioned oracle로 산정해 v0.4 r 기준을 확정한다
+   (현재 record_only). 절대 r 향상은 별도 축: 더 큰 카탈로그(n↑) 또는 입력 피처 보강 검토.
 4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 5. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
 6. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결

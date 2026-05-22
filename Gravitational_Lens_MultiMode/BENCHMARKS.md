@@ -3,6 +3,25 @@
 
 ---
 
+## [2026-05-22] Phase 4 v0.4 Mode 1 selection-bias eval (Kaggle T4, AMP on)
+
+물리-validity-only 카탈로그(train==eval 분포) + SSIM fp32 수정. NaN 0(19ep, best ep11).
+**selection bias 처음으로 소멸** — leak false.
+
+| Metric | v0.2 | v0.3.1(amp off) | **v0.4** |
+|--------|------|-----------------|----------|
+| unfiltered/filtered RMSE 비율 | 3.38 | 3.26 | **0.83** |
+| leak_triggered | true | true | **false** |
+| filtered RMSE / r | 4.33 / 0.65 | 4.45 / 0.66 | 5.81 / 0.33 |
+| unfiltered RMSE / r | 14.62 / 0.28 | 14.51 / 0.31 | **4.81 / 0.59** |
+| unfiltered coverage | 0.21 | 0.275 | **0.695** |
+| no-correction RMSE (filt/unfilt) | — | — | 29.63 / 33.25 |
+
+재교정 acceptance(no_correction 기준, DECISIONS [2026-05-22]): RMSE band `[0.5, 11.08]`,
+ratio `<=2.5`, coverage `[0.62,0.78]` → 통과. `filtered_h0_r`은 record_only(구분포 기준 0.85 폐기).
+
+판정: selection bias·NaN 해결. 절대 r ceiling은 inputs-conditioned oracle 산정이 remaining rigor.
+
 ## [2026-05-22] Phase 1 observation-format Δt extraction MOCK
 
 원본 system6 실측 파일이 없어 `ObservedLensSystem.light_curves` 포맷을 흉내낸 합성
