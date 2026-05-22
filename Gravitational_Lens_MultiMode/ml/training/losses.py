@@ -22,31 +22,41 @@ def _ssim_loss(pred: torch.Tensor, target: torch.Tensor,
     """
     1 - SSIM(pred, target).  입력: [B, 1, H, W].
     반환: 스칼라
+
+    AMP/fp16 안전: autocast를 비활성화하고 내부 계산을 float32로 강제한다.
+    autocast 하에서는 conv2d가 입력 dtype과 무관하게 fp16으로 다운캐스트되어
+    분모 eps(1e-8)가 underflow하고, conv 누적오차로 분산이 음수가 되면 ratio가
+    inf/nan이 된다(v0.3/v0.3.1 학습 NaN의 발원지). 분산은 0으로 클램프한다.
     """
-    # 가우시안 커널
-    sigma = 1.5
-    coords = torch.arange(window_size, device=pred.device, dtype=pred.dtype)
-    coords -= window_size // 2
-    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
-    g /= g.sum()
-    kernel = g[:, None] * g[None, :]                     # [w, w]
-    kernel = kernel.unsqueeze(0).unsqueeze(0)            # [1, 1, w, w]
-    pad = window_size // 2
+    device_type = "cuda" if pred.is_cuda else "cpu"
+    with torch.autocast(device_type=device_type, enabled=False):
+        pred = pred.float()
+        target = target.float()
+        # 가우시안 커널
+        sigma = 1.5
+        coords = torch.arange(window_size, device=pred.device, dtype=pred.dtype)
+        coords -= window_size // 2
+        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        g /= g.sum()
+        kernel = g[:, None] * g[None, :]                     # [w, w]
+        kernel = kernel.unsqueeze(0).unsqueeze(0)            # [1, 1, w, w]
+        pad = window_size // 2
 
-    mu_x  = F.conv2d(pred,   kernel, padding=pad)
-    mu_y  = F.conv2d(target, kernel, padding=pad)
-    mu_x2 = mu_x * mu_x
-    mu_y2 = mu_y * mu_y
-    mu_xy = mu_x * mu_y
+        mu_x  = F.conv2d(pred,   kernel, padding=pad)
+        mu_y  = F.conv2d(target, kernel, padding=pad)
+        mu_x2 = mu_x * mu_x
+        mu_y2 = mu_y * mu_y
+        mu_xy = mu_x * mu_y
 
-    sig_x  = F.conv2d(pred   * pred,   kernel, padding=pad) - mu_x2
-    sig_y  = F.conv2d(target * target, kernel, padding=pad) - mu_y2
-    sig_xy = F.conv2d(pred   * target, kernel, padding=pad) - mu_xy
+        # 분산/공분산은 수치오차로 음수가 될 수 있으므로 클램프
+        sig_x  = (F.conv2d(pred   * pred,   kernel, padding=pad) - mu_x2).clamp_min(0.0)
+        sig_y  = (F.conv2d(target * target, kernel, padding=pad) - mu_y2).clamp_min(0.0)
+        sig_xy = F.conv2d(pred   * target, kernel, padding=pad) - mu_xy
 
-    ssim_map = ((2*mu_xy + C1) * (2*sig_xy + C2)) / (
-        (mu_x2 + mu_y2 + C1) * (sig_x + sig_y + C2) + 1e-8
-    )
-    return 1.0 - ssim_map.mean()
+        ssim_map = ((2*mu_xy + C1) * (2*sig_xy + C2)) / (
+            (mu_x2 + mu_y2 + C1) * (sig_x + sig_y + C2) + 1e-8
+        )
+        return 1.0 - ssim_map.mean()
 
 
 # --------------------------------------------------------------------------- #
@@ -58,9 +68,18 @@ def _gaussian_nll(pred: torch.Tensor, target: torch.Tensor,
     NLL = 0.5 * [log(2π) + 2*log_sigma + ((pred-target)/exp(log_sigma))^2]
     pred, target, log_sigma: 동일 shape.
     반환: 스칼라
+
+    AMP/fp16 안전: autocast를 비활성화하고 float32로 계산한다. autocast 하에서는
+    exp(2*log_sigma)가 fp16 overflow하거나 var가 underflow해 (pred-target)^2/var가
+    inf가 될 수 있다. 2*log_sigma를 안전범위로 클램프하고 var에 fp32 floor를 둔다.
     """
-    var = (2 * log_sigma).exp() + 1e-8
-    return (0.5 * ((pred - target) ** 2 / var + 2 * log_sigma)).mean()
+    device_type = "cuda" if pred.is_cuda else "cpu"
+    with torch.autocast(device_type=device_type, enabled=False):
+        pred = pred.float()
+        target = target.float()
+        two_log_sigma = (2.0 * log_sigma.float()).clamp(-30.0, 30.0)
+        var = two_log_sigma.exp().clamp_min(1e-8)
+        return (0.5 * ((pred - target) ** 2 / var + two_log_sigma)).mean()
 
 
 # --------------------------------------------------------------------------- #

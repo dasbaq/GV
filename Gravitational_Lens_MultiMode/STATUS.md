@@ -275,15 +275,36 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   `0.0`, mu `0.0265`로 v0.3보다 악화됐다. dphi band ablation에서 band 제외 시 correction
   support는 개선되지만 correction max가 `69.34`까지 복귀해 이번 round는 NaN 안전을 우선한다.
   AMP/loss 측 수치 가드(`F_joint` 정규화 재검토, NLL variance floor 등)는 acceptance 필요 제안으로만 보류한다.
+- Phase 4 v0.3.1 Kaggle full run도 NaN으로 epoch1 붕괴. AMP off로 재실행하니 NaN 0(50ep, early-stop
+  ep25)이라 **NaN은 fp16 전용**임이 확정됐다. 즉 입력 tail cap 복원으로도 NaN이 안 막혔다 →
+  "극단 입력→AMP overflow" 가설 폐기. v0.3 history에서 mode1/2/3_task·mode1_cal은 유한한데
+  ssim=nan → **NaN 발원지는 fp16/autocast 하의 SSIM**(`_ssim_loss` 분모 eps underflow + 분산 음수).
+  단 AMP-off v0.3.1 결과는 acceptance 또 불합격(filtered RMSE 4.45/r 0.66, unfiltered 14.51/r 0.31,
+  비율 3.26>3.18 leak)으로 selection bias가 v0.2와 동일하게 잔존 → tail filter가 bias 원인.
+- 결론: v0.1/v0.2 입력측 tail filter는 "CUDA fp16 안정화" 오진단 산물이며 실효는 selection bias뿐이었다.
+  `ml/training/losses.py`의 SSIM/NLL을 fp32로 고치면 tail filter가 불필요해진다(상세 DECISIONS 참조).
+- Phase 4 v0.4 = 물리 validity only를 M2에서 구현/생성. `validity_filter="v0_4"`는 root/finite/
+  `dt_true>0`/`|mu|<0.98`/separation`>=0.1`만 유지하고 label·tail cap·H0 quota를 전부 제거(비-stratified).
+  `data/mock/phase4_v0_4.h5`(n=500,seed42)의 `mode1_H0_correction` mean/std/max `29.06/13.68/69.34`가
+  unfiltered eval(`phase4_v0_4_eval_unfiltered.h5`, n=200) `30.38/13.52/69.34`와 **일치** →
+  train↔eval 분포 정합으로 selection bias 구조적 제거(v0.2 filtered ~17 truncation 해소).
+  H0 KS vs U[60,80] p는 train/eval 둘 다 ~`0.025`로 동일(자연 분포). `target_scaler_phase4_v0_4.pkl`
+  mode1 mean/scale `29.64/13.71`. `data/logs/phase4_v0_4_equivalence.json` forward diff `1.043e-07`,
+  Welch p `0.874`, passed. SSIM fp32 수정으로 큰 correction tail에도 NaN 안 나는지는 Kaggle sanity에서 확인.
+  Kaggle 폴더 `data/kaggle_upload/lens-phase4-v0-4/`(train/unfiltered/scaler/equivalence) 준비.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Kaggle CUDA에서 Phase 4 v0.3.1 full train을 수행한다:
-   `python scripts/phase4_v0_3_1_round.py --phase train --equivalence-from /kaggle/input/<slug>/phase4_v0_3_1_equivalence.json --device cuda --workers 4 --epochs 50 --bootstrap-n 1000`.
-   acceptance 사전 기준은 selection-bias ratio `<=2.5`, 1σ coverage `[0.62,0.78]`이다.
+2. Kaggle CUDA에서 Phase 4 v0.4 full train을 수행한다(SSIM fp32 수정 + 물리-validity-only).
+   Kaggle Dataset 업로드: `data/kaggle_upload/lens-phase4-v0-4/`(또는
+   `python scripts/sync_to_kaggle.py --round phase4_v0_4 --slug lens-phase4-v0-4 --execute`).
+   먼저 2-epoch sanity로 `nan_detected=false` 확인(SSIM fp32 효과) 후:
+   `python scripts/phase4_v0_4_round.py --phase train --equivalence-from /kaggle/input/<slug>/phase4_v0_4_equivalence.json --device cuda --workers 0 --epochs 50 --bootstrap-n 1000`.
+   기대: train↔eval 분포 정합으로 unfiltered/filtered RMSE 비율이 1에 수렴(<=2.5). acceptance 사전
+   기준은 ratio `<=2.5`, 1σ coverage `[0.62,0.78]`, filtered r `>=0.85`. (v0.3/v0.3.1은 폐기.)
 3. Phase 4 v0.3에서 coverage 개선은 NLL/calibration 문제로 별도 점검한다
    (filtered validation뿐 아니라 unfiltered/cut-boundary bin별 residual/sigma 검증).
 4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토

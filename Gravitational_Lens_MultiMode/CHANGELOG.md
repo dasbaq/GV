@@ -3,6 +3,14 @@
 
 ---
 
+## [2026-05-22] — fp16 SSIM NaN 수정 + Phase 4 v0.4 물리-validity-only 카탈로그
+- 진단 확정: v0.3.1도 학습 NaN(epoch1 train=nan, val 유한). AMP off로 재실행하니 NaN 0(50ep) → NaN은 fp16 전용. v0.3 history에서 mode1/2/3_task·mode1_cal 유한한데 ssim=nan → **발원지는 fp16/autocast SSIM**, 카탈로그 필터와 무관. 단 AMP-off v0.3.1은 acceptance 또 불합격(unfiltered/filtered RMSE 3.26, filtered r 0.66)으로 selection bias 잔존 → tail filter가 원인.
+- `ml/training/losses.py`: `_ssim_loss`/`_gaussian_nll`를 autocast 비활성 fp32 블록으로 강제. SSIM 분산 `clamp_min(0)`, NLL `2*log_sigma` `[-30,30]` 클램프 + var floor. `tests/test_losses_amp_safe.py` 추가(degenerate 입력 fp16 finite + 정상입력 검증), 4 passed.
+- `ml/data/error_catalog.py`: `validity_filter="v0_4"` 추가 — 물리 validity only(root/finite/dt>0/`|mu|<0.98`/sep≥0.1), label·tail cap·H0 quota 전부 제거(비-stratified 수집). v0.4는 v0.1/v0.2 tail filter가 "fp16 안정화" 오진단 산물이었다는 결론에 따른 설계.
+- `data/mock/phase4_v0_4.h5`(n=500,seed42) + `phase4_v0_4_eval_unfiltered.h5`(n=200,off): train correction mean/std/max `29.06/13.68/69.34`가 unfiltered `30.38/13.52/69.34`와 **일치**(v0.2 filtered ~17의 truncation 제거 → selection bias 구조적 해소). `target_scaler_phase4_v0_4.pkl`(mode1 mean/scale `29.64/13.71`).
+- `scripts/phase4_v0_4_round.py`(v0.3.1 round 복제, 모델/입력/loss/optimizer/batch/AMP 동일). `data/logs/phase4_v0_4_equivalence.json`(forward diff `1.043e-07`, Welch p `0.874`, passed). Kaggle input 폴더 `data/kaggle_upload/lens-phase4-v0-4/`(git ignored) 생성.
+- 회귀: `pytest -q tests/test_losses_amp_safe.py tests/test_phase4_validity.py tests/test_error_catalog.py tests/test_standard_approx.py` → 18 passed.
+
 ## [2026-05-22] — Phase 4 v0.3.1 equivalence handoff + Kaggle staging + prompt
 - `data/logs/phase4_v0_3_1_equivalence.json` 생성(`--phase equivalence --device mps --epochs 1`): forward max diff `1.043e-07`(<1e-4), distribution Welch p `0.9908`, `passed=true`. Kaggle `--phase train`의 `--equivalence-from` 입력.
 - `python scripts/sync_to_kaggle.py --round phase4_v0_3_1 ... ` dry-run에서 train h5/unfiltered eval h5/scaler/equivalence json/floor json 5개 포함, missing 0 확인.

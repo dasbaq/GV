@@ -4,6 +4,31 @@
 
 ---
 
+## [2026-05-22] NaN 원인은 fp16 SSIM, validity tail filter는 오진단 산물 → Phase 4 v0.4 물리 validity only
+
+### 결정
+1. `ml/training/losses.py` 의 `_ssim_loss`, `_gaussian_nll` 를 autocast 비활성 fp32 블록으로 강제하고,
+   SSIM 분산을 `clamp_min(0)`, NLL의 `2*log_sigma`를 `[-30,30]` 클램프 + var floor 1e-8로 둔다.
+2. Phase 4 v0.4 카탈로그는 **물리 validity only** (`validity_filter="v0_4"`): root 수렴/finite/
+   `dt_true>0`/`|mu|<0.98`/separation`>=0.1`만 유지. label-상관 cap, v0.2 입력측 tail cap,
+   H0 stratified quota를 **모두 제거**한다(비-stratified 기본 수집).
+
+### 근거
+- v0.2(NaN 0)→v0.3(NaN)→v0.3.1(입력 tail cap 복원해도 NaN) 결과로 "극단 입력→AMP overflow"
+  가설이 폐기됐다. v0.3.1 AMP-off full run은 NaN 0이었고(NaN이 fp16 전용임을 확정),
+  v0.3 history에서 `mode1/2/3_task`·`mode1_cal`은 유한한데 `ssim=nan`→`total=nan`이었다.
+  ⇒ NaN의 발원지는 fp16/autocast 하의 SSIM(분모 eps underflow + 분산 음수)이며 카탈로그 필터와 무관.
+- v0.1/v0.2의 입력측 tail filter는 "CUDA fp16/AMP 안정화"를 명분으로 도입됐으나, 실제 NaN 원인은
+  SSIM이었다. 즉 tail filter는 **오진단으로 만들어진 것**이고 그 유일한 실효는 selection bias였다.
+- SSIM을 fp32로 고치면 tail filter가 불필요해진다. 따라서 v0.4는 train 분포를 unfiltered
+  (root-converged) eval 분포와 일치시켜 selection bias를 구조적으로 제거한다. 실제로 v0.4 train의
+  `mode1_H0_correction` mean/std/max `29.06/13.68/69.34`가 unfiltered `30.38/13.52/69.34`와
+  일치한다(v0.2 filtered는 ~17로 잘려 bias의 원인이었다).
+
+### 번복 가능성
+v0.4 재학습에서 큰 correction tail로 인해 다른 불안정이 나오면, label-중립 입력 cap만 선택적으로
+재도입하는 것을 검토한다(단 label-상관 cap·quota는 재도입 금지).
+
 ## [2026-05-22] Phase 4 v0.3.1 label/input validity split
 
 ### 결정

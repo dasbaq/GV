@@ -558,8 +558,8 @@ def _distribution(values: np.ndarray) -> dict[str, float]:
 
 def _validity_mode(config: CatalogConfig) -> str:
     mode = str(config.validity_filter)
-    if mode not in {"v0_3_1", "v0_3", "v0_2", "v0_1", "off"}:
-        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_3_1, v0_3, v0_2, v0_1, or off.")
+    if mode not in {"v0_4", "v0_3_1", "v0_3", "v0_2", "v0_1", "off"}:
+        raise ValueError(f"Unsupported validity_filter={mode!r}; expected v0_4, v0_3_1, v0_3, v0_2, v0_1, or off.")
     if mode == "v0_2" and not (config.include_nfw or config.include_kappa_ext):
         return "v0_1"
     return mode
@@ -595,7 +595,7 @@ def _validity_reject_reason(
     mode = validity_filter
     if mode is None:
         mode = "v0_2" if apply_v0_2_filters else "v0_1"
-    if mode not in {"v0_3_1", "v0_3", "v0_2", "v0_1"}:
+    if mode not in {"v0_4", "v0_3_1", "v0_3", "v0_2", "v0_1"}:
         raise ValueError(f"Unsupported validity_filter={mode!r}")
     if not (np.isfinite(dt_true) and np.isfinite(h0_approx) and np.isfinite(phi_truth) and np.isfinite(phi_sie)):
         return "nonfinite_values"
@@ -605,7 +605,10 @@ def _validity_reject_reason(
         return "mu_truth_ge_0p98"
     if separation_truth < TRUTH_MIN_IMAGE_SEPARATION_ARCSEC:
         return "image_separation_lt_0p1"
-    if mode == "v0_3":
+    # v0_4: 물리 validity only (root/finite/dt>0/|mu|<0.98/separation>=0.1).
+    # label-상관 cap, tail cap, H0 stratified quota를 모두 제거해 train 분포를
+    # unfiltered(root-converged) 분포와 일치시켜 selection bias를 구조적으로 없앤다.
+    if mode in {"v0_3", "v0_4"}:
         return None
     if mode == "v0_3_1":
         if abs(mu_truth) > TRUTH_V0_2_MU_MAX:
@@ -659,6 +662,8 @@ def _default_log_paths(output_path: Path, config: CatalogConfig) -> tuple[Path, 
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_3_label_distribution.json"
     elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_3_1.h5").resolve():
         log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_3_1_label_distribution.json"
+    elif output_path.resolve() == (PROJECT_ROOT / "data" / "mock" / "phase4_v0_4.h5").resolve():
+        log_path = PROJECT_ROOT / "data" / "logs" / "phase4_v0_4_label_distribution.json"
     else:
         log_path = output_path.with_suffix(".label_distribution.json")
     reject_path = (
@@ -1007,7 +1012,9 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         meta.attrs["random_seed"] = config.seed
         meta.attrs["full_truth_available"] = True
         meta.attrs["generator_version"] = (
-            "phase4-v0.3.1"
+            "phase4-v0.4"
+            if validity_mode == "v0_4"
+            else "phase4-v0.3.1"
             if validity_mode == "v0_3_1"
             else "phase4-v0.3"
             if validity_mode == "v0_3"
@@ -1189,7 +1196,7 @@ def main() -> None:
     parser.add_argument("--reject-log-path", type=Path, default=None)
     parser.add_argument("--diagnosis-log-path", type=Path, default=None)
     parser.add_argument("--resample-budget", type=int, default=None)
-    parser.add_argument("--validity-filter", choices=("v0_3_1", "v0_3", "v0_2", "v0_1", "off"), default="v0_2")
+    parser.add_argument("--validity-filter", choices=("v0_4", "v0_3_1", "v0_3", "v0_2", "v0_1", "off"), default="v0_2")
     parser.add_argument("--eval-role", default=None)
     args = parser.parse_args()
     summary = build_phase4_catalog(
