@@ -305,6 +305,10 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   leak floor를 `0.5`로 바꿨다. 재교정 후 v0.4는 bias/RMSE/coverage 전부 통과(r record_only).
   근거 DECISIONS [2026-05-22] + `data/logs/phase4_v0_4_floor_analysis.json`. r ceiling은
   inputs-conditioned oracle로 산정하는 것이 remaining rigor.
+  Kaggle 산출물 회수(git ignored): `data/checkpoints/phase4_v0_4_imgres_best.pt`,
+  `data/logs/phase4_v0_4_imgres_h0_eval{,_unfiltered}.json`, `..._long_history.json`,
+  `..._infra_equivalence.json`. eval 재확인: filtered RMSE `5.81`/r `0.33`, unfiltered RMSE
+  `4.81`/r `0.59`, no-correction `29.63`/`33.25`. 이 checkpoint를 Phase 5 실관측 보정에 사용.
 
 ---
 
