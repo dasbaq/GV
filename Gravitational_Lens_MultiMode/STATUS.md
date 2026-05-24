@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
 
-마지막 업데이트: 2026-05-22
+마지막 업데이트: 2026-05-24
 
 ---
 
@@ -94,6 +94,8 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [x] inversion/mode1_h0.py          — H₀ 역산 솔버 단위/import 정합성 수정 (Δφ [rad²])
 [x] inversion/obs_to_features.py    — 관측/스펙 → corrector 입력 텐서 (dataset 재현)
 [x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ + ML 보정(--apply-correction) JSON CLI
+[x] inversion/real_catalog.py       — 실관측 YAML(Gaia GraL X + 외부 Bag+22 결과) → Mode 1 feature spec
+                                      (|Δt| 저장, 음수 입력 pair flip 로그, Mode 2 예약필드 보존)
 [ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
 [ ] inversion/mode3_wrapper.py     — 기존 Mode 3 솔버 호출 wrapper (코드 수정 금지)
 ```
@@ -101,7 +103,9 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 ### 5-B. ML 오차 보정 (멀티모달)
 
 ```
-[ ] ml/training/dataset.py         — HDF5 스트리밍, Mode별 라벨 분기
+[x] ml/training/feature_schema.py  — ParamEncoder 공통 feature schema, 누락 mask, 품질 지표
+                                    (config-driven sigma_dt sampler/quality normalization)
+[x] ml/training/dataset.py         — HDF5 스트리밍, Mode별 라벨 분기 + observed_features 입력
 [ ] ml/models/encoders.py          — 4종 인코더 (LC / Param / Σ-2D / Image)
 [ ] ml/models/fusion.py            — Cross-attention
 [ ] ml/models/heads.py             — Mode 1 / 2 / 3 분기 헤드
@@ -317,16 +321,39 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   보정 closed-form 일치, (c) feature 부재 시 graceful skip — 9 passed(e2e/losses 포함).
   v0.4 데모: H0_approx 60.6/31.4/21.5 → H0_corrected 72.4/73.5/73.0 (H0_true 74.0/68.9/63.9).
   실관측 원본 데이터는 여전히 부재라 합성/Phase4-HDF5로만 검증(MOCK).
+- Phase 5 실관측 입력 인터페이스 확장 완료: 외부 Bag+22 결과를 포함한 YAML 리스트 카탈로그를
+  `inversion/real_catalog.py`에서 검증하고, `ml/training/feature_schema.py`가 dataset/HDF5와
+  YAML 추론 경로의 ParamEncoder feature order를 공유한다. 새 scalar 입력은 `dt_lc`,
+  `dt_lc_sigma`, 광곡선 품질 지표 4개, `sigma_v`/`theta_E`/`q` missing flag다.
+  `dt_lc`/`dt_lc_sigma`는 실측 entry 필수이며, lens feature 누락은 정상 케이스로 mask 처리한다.
+  Phase 4 HDF5에는 `observed_features/`와 `light_curve_quality/`를 저장한다.
+  ParamEncoder 입력 차원은 13→20으로 증가했으며, 기존 13-dim checkpoint는 로더에서 첫 layer
+  weight를 부분 이식해 graceful 호환한다. Mode 2 입력은 실제 추가하지 않고 `mode2_inputs`
+  예약 필드만 YAML에서 보존한다.
+- Phase 4 v0.4 카탈로그를 20-dim observed feature schema로 재생성했다.
+  `data/mock/phase4_v0_4.h5`(n=500, seed42)는 `observed_features/` 및
+  `light_curve_quality/`를 포함하며 Mode 1 correction mean/std/min/max는
+  `29.065/13.677/3.198/69.339`. `phase4_v0_4_eval_unfiltered.h5`(n=200, off)도
+  동일 schema로 갱신했고 correction mean/std/min/max는 `30.378/13.515/6.543/69.339`.
+  `target_scaler_phase4_v0_4.pkl` Mode 1 mean/scale은 `29.6389/13.7096`.
+  로컬 MPS equivalence는 현재 Codex 프로세스에서 MPS unavailable로 미실행이라,
+  stale handoff JSON은 legacy 이름으로 보존했고 Kaggle은 `--phase all`로 CUDA equivalence와
+  full train을 같은 세션에서 실행해야 한다. Kaggle staging 파일 복사는 완료됐고 `kaggle`
+  CLI도 설치했으나 인증이 없어(`kaggle auth login` 또는 `~/.kaggle/kaggle.json` 필요)
+  Dataset version 업로드는 미완료.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 v0.4 full run 완료(selection bias·NaN 해결, acceptance 재교정 통과·r record_only).
-   Kaggle 산출물(checkpoint/eval JSON)을 repo로 회수해 보관하고, 재교정 verdict를 BENCHMARKS에 고정.
+2. Phase 4 v0.4 20-dim 재학습: Kaggle Dataset version 업로드 후 CUDA에서
+   `scripts/phase4_v0_4_round.py --phase all --device cuda --workers 0 --epochs 50 --bootstrap-n 1000`
+   실행. 산출물(checkpoint/eval/history/infra JSON)을 repo로 회수해 BENCHMARKS에 고정.
 3. 무편향 분포의 achievable-r ceiling을 inputs-conditioned oracle로 산정해 v0.4 r 기준을 확정한다
    (현재 record_only). 절대 r 향상은 별도 축: 더 큰 카탈로그(n↑) 또는 입력 피처 보강 검토.
 4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 5. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
 6. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결
+7. 실제 Gaia GraL X + Bag+22 YAML 수집 후 `dt_lc_sigma` 및 품질 지표 분포를 재산정하고
+   `config/ml.yaml:data.observed_features`/정규화 범위를 업데이트

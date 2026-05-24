@@ -1,0 +1,16 @@
+- name: grailx_minimal
+  sources:
+    catalog: Gaia GraL X
+    time_delay: external_bag22
+  redshifts:
+    z_lens: 0.38
+    z_source: 1.91
+  time_delay:
+    dt_lc: 18.7
+    dt_lc_sigma: 3.2
+    image_pair_convention: brightest_pair_positive_delay
+  light_curve_quality:
+    N_epochs: 54
+    baseline_days: 640.0
+    median_cadence_days: 9.0
+    median_photometric_error: 0.12

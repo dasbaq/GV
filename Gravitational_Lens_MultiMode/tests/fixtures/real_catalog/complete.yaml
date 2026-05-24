@@ -1,0 +1,32 @@
+- name: grailx_complete
+  sources:
+    catalog: Gaia GraL X
+    time_delay: external_bag22
+  redshifts:
+    z_lens: 0.45
+    z_source: 1.72
+  kinematics:
+    sigma_v: 245.0
+  lens_model:
+    H0_approx: 68.5
+    theta_E: 1.12
+    q: 0.78
+    dphi_rad2: 1.0e-11
+  time_delay:
+    dt_lc: 24.3
+    dt_lc_sigma: 1.1
+    image_pair_convention: brightest_pair_positive_delay
+    pair_order:
+      leading_image: A
+      trailing_image: B
+  light_curve_quality:
+    N_epochs: 180
+    baseline_days: 1280.0
+    median_cadence_days: 3.1
+    median_photometric_error: 0.045
+  mode2_inputs:
+    image_positions: null
+    all_pair_delays: null
+    flux_ratios: null
+    magnifications: null
+    is_lens_probability: 0.97

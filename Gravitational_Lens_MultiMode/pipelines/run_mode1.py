@@ -13,6 +13,7 @@ import numpy as np
 from inversion.delay_extraction import extract_delay_from_observation
 from inversion.mode1_h0 import invert_h0
 from inversion.observation_io import ObservedLensSystem, from_hdf5
+from inversion.real_catalog import load_yaml_catalog
 from inversion.sie_fit import fit_sie_to_images
 
 
@@ -110,7 +111,14 @@ def _apply_ml_correction(
             "reason": f"correction skipped: scaler not found ({scl_path})",
         }
 
-    model, cfg = load_corrector(ckpt_path, cfg_path)
+    try:
+        model, cfg = load_corrector(ckpt_path, cfg_path)
+    except RuntimeError as exc:
+        return h0_approx, {
+            "applied": False,
+            "checkpoint": str(ckpt_path),
+            "reason": f"correction skipped: checkpoint/config incompatible ({exc})",
+        }
     scaler = load_target_scaler(scl_path)
     inputs = build_corrector_inputs(
         feature_spec,
@@ -120,6 +128,7 @@ def _apply_ml_correction(
         sigma_curve_size=int(cfg["data"]["sigma_curve_size"]),
         approx_level=1,
         target_mode=1,
+        observed_feature_config=cfg["data"].get("observed_features", {}),
     )
     with torch.no_grad():
         out = model(**inputs)
@@ -137,6 +146,83 @@ def _apply_ml_correction(
         "correction": correction,
         "sigma": sigma,
     }
+
+
+def _run_mode1_yaml_catalog(
+    input_path: Path,
+    *,
+    system_index: int,
+    approx_level: int,
+    apply_correction: bool,
+    correction_checkpoint: str | Path | None,
+    correction_scaler: str | Path | None,
+    correction_config: str | Path | None,
+) -> dict[str, Any]:
+    """Run Mode 1 from a real YAML entry with external Bag+22 delay output."""
+
+    entries = load_yaml_catalog(input_path)
+    if not 0 <= int(system_index) < len(entries):
+        raise IndexError(f"system_index={system_index} outside YAML catalog length {len(entries)}")
+    entry = entries[int(system_index)]
+    spec = entry.to_feature_spec()
+    if entry.dphi_rad2 is not None:
+        h0 = invert_h0(
+            np.array([entry.dt_lc], dtype=float),
+            np.array([entry.dphi_rad2], dtype=float),
+            entry.z_lens,
+            entry.z_source,
+            approx_level=approx_level,
+            n_bootstrap=200,
+        )
+        h0_approx = float(h0["H0"])
+        h0_uncertainty = float(h0["H0_uncertainty"])
+    elif entry.H0_approx is not None:
+        h0_approx = float(entry.H0_approx)
+        h0_uncertainty = float("nan")
+    else:
+        raise ValueError("YAML entry must provide lens_model.dphi_rad2 or lens_model.H0_approx")
+    spec["H0_approx"] = h0_approx
+
+    h0_corrected, correction = _apply_ml_correction(
+        h0_approx,
+        apply_correction=apply_correction,
+        checkpoint=correction_checkpoint,
+        feature_spec=spec,
+        scaler_path=correction_scaler,
+        config_path=correction_config,
+    )
+    return _jsonable(
+        {
+            "input": str(input_path),
+            "system_index": int(system_index),
+            "name": entry.name,
+            "mock": False,
+            "approx_level": int(approx_level),
+            "H0_approx": h0_approx,
+            "H0": float(h0_corrected),
+            "H0_uncertainty": h0_uncertainty,
+            "dt_obs_days": float(entry.dt_lc),
+            "dt_uncertainty_days": float(entry.dt_lc_sigma),
+            "confidence_grade": "external_bag22",
+            "dphi_rad2": entry.dphi_rad2,
+            "image_pair_convention": entry.image_pair_convention,
+            "pair_order": entry.pair_order,
+            "conversion_log": list(entry.conversion_log),
+            "light_curve_quality": {
+                "n_epochs_quality": entry.n_epochs_quality,
+                "baseline_days": entry.baseline_days,
+                "median_cadence_days": entry.median_cadence_days,
+                "median_photometric_error": entry.median_photometric_error,
+            },
+            "missing_lens_features": {
+                "sigma_v": entry.sigma_v is None,
+                "theta_E": entry.theta_E is None,
+                "q": entry.q is None,
+            },
+            "mode2_inputs": entry.mode2_inputs,
+            "ml_correction": correction,
+        }
+    )
 
 
 def _feature_spec_from_phase4_hdf5(
@@ -177,7 +263,8 @@ def _feature_spec_from_phase4_hdf5(
     spec.update(
         {
             "H0_approx": float(h0_approx),
-            "dt_approx": float(dt_approx),
+            "dt_lc": float(dt_approx),
+            "dt_lc_sigma": max(float(dt_approx) * 0.045, 1.0e-6),
             "sigma_v": float(sie_fit["sigma_v"]),
             "q": float(sie_fit["q"]),
             "theta_E": float(sie_fit["theta_E"]),
@@ -209,6 +296,17 @@ def run_mode1(
     """
 
     path = Path(input_path)
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return _run_mode1_yaml_catalog(
+            path,
+            system_index=system_index,
+            approx_level=approx_level,
+            apply_correction=apply_correction,
+            correction_checkpoint=correction_checkpoint,
+            correction_scaler=correction_scaler,
+            correction_config=correction_config,
+        )
+
     observation = from_hdf5(path, system_index=system_index)
     is_mock = _mock_flag(path, observation)
 

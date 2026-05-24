@@ -84,7 +84,7 @@ ACCEPTANCE = {
 LEAK_TRIGGERS = {
     "filtered_rmse_ci_upper_below_nfw_oracle_lower": 2.755,
     "unfiltered_filtered_rmse_ratio_max": 3.18,
-    "param_encoder_input_dim": 13,
+    "param_encoder_input_dim": 20,
 }
 
 

@@ -4,6 +4,59 @@
 
 ---
 
+## [2026-05-24] 실관측 YAML ingest와 ParamEncoder feature schema 단일화
+
+### 결정
+실관측 1단계 입력은 YAML 리스트로 받되, 학습/추론 모델에는 `ml/training/feature_schema.py`의
+공통 ParamEncoder schema를 통해 들어간다. Bag+22는 레포에서 호출하지 않고 외부 결과
+`dt_lc`, `dt_lc_sigma`, 광곡선 품질 지표 4개를 YAML entry에 기록한다.
+
+ParamEncoder scalar feature는 기존 8개에서 다음 15개로 확장한다.
+`H0_approx`, `z_lens`, `z_source`, `sigma_v`, `q`, `theta_E`, `dt_lc`,
+`dt_lc_sigma`, `n_epochs_quality`, `baseline_days`, `median_cadence_days`,
+`median_photometric_error`, `missing_sigma_v`, `missing_theta_E`, `missing_q`.
+여기에 기존 `approx_level` 2 one-hot과 `target_mode` 3 one-hot을 붙여 총 입력 차원은 20이다.
+
+### 근거
+- 실측 시스템에서는 `sigma_v`, `theta_E`, `q`가 정상적으로 누락될 수 있으므로 예외나 NaN 전파가
+  아니라 normalized-zero sentinel + field별 missing flag로 처리해야 한다.
+- `dt_lc`와 `dt_lc_sigma`는 Mode 1 H0 추론의 필수 관측량이므로 누락 시 entry를 무효화한다.
+- Mode 2는 이번 작업에서 입력을 추가하지 않지만, YAML의 `mode2_inputs` 예약 필드는 보존해
+  향후 image positions, all pair delays, flux ratios, magnifications를 별도 structured encoder로
+  연결할 수 있게 둔다.
+- `dt_lc_sigma_sampler`, `dt_sign_convention`, primary pair convention, real YAML missing modality 정책은
+  `config/ml.yaml:data.observed_features`에 둔다. Hydra/OmegaConf는 도입하지 않고, 기존 프로젝트의
+  YAML + `yaml.safe_load` config 방식을 유지한다.
+
+### 확정 config 정책
+- 시뮬레이션 `dt_lc_sigma`는 `relative_then_clip` sampler를 사용한다:
+  `relative_error.distribution=log_uniform`, min/max `[0.01, 0.30]`, absolute clip `[0.3, 20.0] days`.
+  실측 카탈로그 수집 후에는 코드 변경 없이 `config/ml.yaml` 값만 조정한다.
+- delay 저장 규약은 `|Δt|` 양수다. YAML 입력이 음수 `dt_lc`를 주면 configured policy에 따라
+  `abs(dt_lc)`로 변환하고 `pair_order.leading_image/trailing_image`를 뒤집으며 `conversion_log`에 남긴다.
+  `pair_order`는 메타데이터로 보존하지만 ParamEncoder 입력에는 넣지 않는다.
+- 광곡선 품질 지표 normalization은 config의 `transform`으로 제어한다. 초기 기본값은 log transform이며
+  범위는 `N_epochs [0,1500]`, `baseline_days [0,5000]`, `median_cadence_days [0,50]`,
+  `median_photometric_error [0,0.5]`다.
+- real catalog fixture는 `tests/fixtures/real_catalog/{complete,partial_no_lens_model,minimal,invalid_examples}.yaml`
+  네 파일로 유지한다.
+
+### 운영 규칙
+- 실측 YAML과 시뮬레이션 HDF5 모두 같은 feature builder를 사용해야 한다.
+- Bag+22 raw extraction과 ZTF 다운로드는 ingest adapter에서 수행하지 않는다.
+- `M200`, `concentration`, `kappa_ext`, `nfw_offset`는 실측 YAML에서도 truth-only key로 거부한다.
+- 기존 13-dim checkpoint는 새 20-dim 모델에 로드할 때 ParamEncoder 첫 layer의 기존 column만
+  부분 이식한다. 새 feature column은 초기화 상태이므로 정식 성능 평가는 새 schema로 재학습해야 한다.
+
+### 관련 파일
+- `config/ml.yaml`
+- `ml/training/feature_schema.py`
+- `inversion/real_catalog.py`
+- `ml/training/dataset.py`
+- `inversion/obs_to_features.py`
+- `pipelines/run_mode1.py`
+- `ml/data/error_catalog.py`
+
 ## [2026-05-22] Phase 4 v0.4 acceptance 임계 재교정 (구분포 기준 폐기)
 
 ### 결정

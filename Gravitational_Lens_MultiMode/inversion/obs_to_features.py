@@ -18,11 +18,13 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from ml.training.feature_schema import (
+    build_param_vector_from_features,
+    compute_light_curve_quality,
+    hdf5_feature_values,
+)
 from ml.training.dataset import _compute_sigma_curve_fallback
 from ml.utils.mask import make_lc_mask
-from ml.utils.normalize import build_param_vector
-
-_DT_LC_REL_SIGMA_EXPECTED = 0.045  # dataset.py와 동일
 
 
 def _resize_image(arr: np.ndarray, image_size: int) -> np.ndarray:
@@ -45,44 +47,50 @@ def build_corrector_inputs(
     sigma_curve_size: int = 512,
     approx_level: int = 1,
     target_mode: int = 1,
+    observed_feature_config: Mapping[str, Any] | None = None,
 ) -> dict[str, torch.Tensor]:
     """스펙 dict → batch=1 corrector 입력 텐서 dict (Mode 1).
 
     `dataset.__getitem__`의 Mode 1 경로와 byte 단위로 동일한 텐서를 만든다.
-    필요한 ``spec`` 키: ``F_joint``[max_epochs], ``sigma_noise``[max_epochs],
-    ``n_epochs``, ``H0_approx``, ``z_lens``, ``z_source``, ``sigma_v``, ``q``,
-    ``theta_E``, ``dt_approx``, ``I_obs``[H,W], ``S_approx``[H,W]. 선택:
-    ``sigma_curve``[S] (없으면 F_joint 기반 fallback). approx_level은 eval 기본값 1.
+    필요한 scalar ``spec`` 키: ``H0_approx``, ``z_lens``, ``z_source``,
+    ``dt_lc``/``dt_lc_sigma`` 또는 legacy ``dt_approx``. ``sigma_v``, ``q``,
+    ``theta_E``는 누락 가능하며 missing flag가 함께 들어간다. Raw
+    light-curve/image tensors are optional for real YAML catalogs; missing
+    modalities are represented by zero tensors. approx_level은 eval 기본값 1.
     """
 
-    F_raw = np.asarray(spec["F_joint"], dtype=np.float32)
-    sigma_noise = np.asarray(spec["sigma_noise"], dtype=np.float32)
-    n_valid = min(int(spec["n_epochs"]), max_len)
+    n_valid = min(int(spec.get("n_epochs", spec.get("n_epochs_quality", 0)) or 0), max_len)
+    if spec.get("F_joint") is None:
+        F_raw = np.zeros(max(n_valid, 1), dtype=np.float32)
+    else:
+        F_raw = np.asarray(spec["F_joint"], dtype=np.float32).reshape(-1)
+    if spec.get("sigma_noise") is None:
+        sigma_noise = np.zeros(max(n_valid, 1), dtype=np.float32)
+    else:
+        sigma_noise = np.asarray(spec["sigma_noise"], dtype=np.float32).reshape(-1)
 
     lc = np.zeros((2, max_len), dtype=np.float32)
     lc[0, :n_valid] = F_raw[:n_valid]
     lc[1, :n_valid] = sigma_noise[:n_valid]
     lc_mask = make_lc_mask(n_valid, max_len)
 
-    dt_lc = float(spec["dt_approx"])
-    dt_lc_sigma = max(dt_lc * _DT_LC_REL_SIGMA_EXPECTED, 1.0e-6)
-    raw_params = {
-        "H0_approx": float(spec["H0_approx"]),
-        "z_lens": float(spec["z_lens"]),
-        "z_source": float(spec["z_source"]),
-        "sigma_v": float(spec["sigma_v"]),
-        "q": float(spec["q"]),
-        "theta_E": float(spec["theta_E"]),
-        "dt_lc": dt_lc,
-        "dt_lc_sigma": dt_lc_sigma,
-    }
-    param_base = build_param_vector(raw_params, dict(param_norm))
-    al_onehot = np.array(
-        [float(approx_level == 1), float(approx_level == 2)], dtype=np.float32
+    raw_params = dict(spec)
+    if not all(key in raw_params for key in ("n_epochs_quality", "baseline_days", "median_cadence_days", "median_photometric_error")):
+        raw_params.update(
+            compute_light_curve_quality(
+                t_obs=np.asarray(spec.get("t_obs"), dtype=np.float32) if spec.get("t_obs") is not None else None,
+                sigma_noise=sigma_noise,
+                n_epochs=n_valid,
+            )
+        )
+    params_vec = build_param_vector_from_features(
+        raw_params,
+        dict(param_norm),
+        approx_level=approx_level,
+        target_mode=target_mode,
+        observed_feature_config=observed_feature_config or {},
+        allow_legacy_delay_sigma=True,
     )
-    mode_oh = np.zeros(3, dtype=np.float32)
-    mode_oh[target_mode - 1] = 1.0
-    params_vec = np.concatenate([param_base, al_onehot, mode_oh])
 
     if spec.get("sigma_curve") is not None:
         sigma_curve = np.asarray(spec["sigma_curve"], dtype=np.float32)[:sigma_curve_size]
@@ -93,7 +101,7 @@ def build_corrector_inputs(
     else:
         sigma_curve = _compute_sigma_curve_fallback(F_raw, n_valid, sigma_curve_size)
 
-    use_image = bool(int(target_mode) in (1, 3))
+    use_image = bool(int(target_mode) in (1, 3) and spec.get("I_obs") is not None and spec.get("S_approx") is not None)
     if use_image:
         img_raw = _resize_image(spec["I_obs"], image_size)
         approx_raw = _resize_image(spec["S_approx"], image_size)
@@ -121,17 +129,13 @@ def system_spec_from_hdf5(path: str | Path, sys_idx: int = 0) -> dict[str, Any]:
     import h5py
 
     with h5py.File(str(path), "r") as f:
+        features = hdf5_feature_values(f, sys_idx)
         return {
             "F_joint": np.asarray(f["light_curves/F_joint"][sys_idx], dtype=np.float32),
             "sigma_noise": np.asarray(f["light_curves/sigma_noise"][sys_idx], dtype=np.float32),
+            "t_obs": np.asarray(f["light_curves/t_obs"][sys_idx], dtype=np.float32),
             "n_epochs": int(f["light_curves/n_epochs"][sys_idx]),
-            "H0_approx": float(f["approx_outputs/H0_approx"][sys_idx]),
-            "z_lens": float(f["params/z_lens"][sys_idx]),
-            "z_source": float(f["params/z_source"][sys_idx]),
-            "sigma_v": float(f["params/sigma_v"][sys_idx]),
-            "q": float(f["params/q"][sys_idx]),
-            "theta_E": float(f["params/theta_E"][sys_idx]),
-            "dt_approx": float(f["approx_outputs/dt_approx"][sys_idx]),
+            **features,
             "I_obs": np.asarray(f["images/I_obs"][sys_idx], dtype=np.float32),
             "S_approx": np.asarray(f["approx_outputs/S_approx"][sys_idx], dtype=np.float32),
             "sigma_curve": (
@@ -159,6 +163,15 @@ def load_corrector(checkpoint: str | Path, config_path: str | Path):
     model_cfg["param_in_dim"] = len(param_norm) + 5
     model = MultiModalErrorCorrector(model_cfg)
     state = torch.load(str(checkpoint), map_location="cpu")
+    first_weight_key = "par_enc.net.0.weight"
+    if first_weight_key in state:
+        current = model.state_dict()[first_weight_key]
+        loaded = state[first_weight_key]
+        if loaded.shape != current.shape and loaded.shape[0] == current.shape[0]:
+            patched = current.clone()
+            n_cols = min(int(loaded.shape[1]), int(current.shape[1]))
+            patched[:, :n_cols] = loaded[:, :n_cols]
+            state[first_weight_key] = patched
     model.load_state_dict(state)
     model.eval()
     return model, cfg

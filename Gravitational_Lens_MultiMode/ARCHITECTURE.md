@@ -41,7 +41,19 @@ substructure, 다중 평면 효과 등)를 매번 numerically 풀면 너무 느�
    각 Mode 출력 → 보정된 출력 (full numerical 추정치)
 ```
 
-파이프라인 간 인터페이스: **HDF5 파일만 사용**
+파이프라인 간 정식 학습/평가 인터페이스: **HDF5 파일 사용**.
+실관측 1단계 ingest는 사람이 관리하는 **YAML 리스트**를 허용한다. YAML은
+Gaia GraL X 메타데이터와 외부 Bag+22 결과(`dt_lc`, `dt_lc_sigma`, 광곡선 품질 지표)를
+담는 entry 포맷이며, 코드 내부에서는 공통 feature schema로 변환되어 HDF5 dataset 경로와
+같은 ParamEncoder 입력 순서를 사용한다. Bag+22 raw 추출과 ZTF 다운로드는 이 ingest
+adapter의 책임이 아니다.
+
+실관측/시뮬레이션 공통 ParamEncoder 입력 정책은 `config/ml.yaml:data.observed_features`와
+`data.param_normalization`이 단일 source of truth다. Δt 저장은 `|Δt|` 양수만 허용하고,
+음수 YAML 입력은 configured policy로 pair order를 뒤집어 메타데이터 로그에 남긴다. 시뮬레이션
+`sigma_dt` proxy는 config의 `relative_then_clip` sampler에서 생성하며, 광곡선 품질 지표는
+config의 `transform`(기본 log)과 min/max 범위로 정규화한다. 누락 가능한 렌즈 scalar는
+normalized-zero sentinel과 field별 missing flag로 표현한다.
 
 ---
 
@@ -241,6 +253,20 @@ simulation_YYYYMMDD_HHMMSS.h5
 │   ├── t_obs       [days]
 │   └── n_epochs    (int)
 │
+├── observed_features/           # [n_systems] inference-side scalar inputs
+│   ├── dt_lc                   # 외부/합성 Bag+22 primary-pair Δt [days]
+│   ├── dt_lc_sigma             # σ_Δt [days]
+│   ├── n_epochs_quality
+│   ├── baseline_days
+│   ├── median_cadence_days
+│   └── median_photometric_error
+│
+├── light_curve_quality/         # observed_features 품질 지표 alias
+│   ├── n_epochs_quality
+│   ├── baseline_days
+│   ├── median_cadence_days
+│   └── median_photometric_error
+│
 ├── images/                      # [n_systems, H, W]   ← Mode 3용
 │   ├── I_obs                    # 관측(렌즈된) 이미지
 │   ├── S_true                   # ground-truth source (full_numerical)
@@ -270,6 +296,43 @@ simulation_YYYYMMDD_HHMMSS.h5
     ├── mode2_dm_correction      [vlen vector]
     └── mode3_source_correction  [n_systems, H, W]
 ```
+
+### 실관측 YAML ingest schema
+
+실관측 1단계 카탈로그는 top-level YAML list이며 entry마다 다음 nested dict를 사용한다.
+
+```
+- name: <system id>
+  sources: {...}
+  redshifts: {z_lens: ..., z_source: ...}
+  kinematics: {sigma_v: null | <km/s>}       # 누락 가능
+  lens_model:
+    H0_approx: null | <km/s/Mpc>
+    theta_E: null | <arcsec>                 # 누락 가능
+    q: null | <axis ratio>                   # 누락 가능
+    dphi_rad2: null | <rad^2>
+  time_delay:
+    dt_lc: <days>                            # 필수
+    dt_lc_sigma: <days>                      # 필수
+    image_pair_convention: brightest_pair_positive_delay
+  light_curve_quality:
+    N_epochs: ...
+    baseline_days: ...
+    median_cadence_days: ...
+    median_photometric_error: ...
+  mode2_inputs:                              # 1단계에서는 보존만 함
+    image_positions: null
+    all_pair_delays: null
+    flux_ratios: null
+    magnifications: null
+    is_lens_probability: null
+```
+
+`dt_lc`는 현재 시뮬레이션 규약과 맞춰 primary pair의 양수 시간지연으로 둔다.
+시뮬레이션 primary pair는 magnification이 큰 두 상(`theta_1`, `theta_2`)이다.
+`sigma_v`, `theta_E`, `q`는 실측에서 정상적으로 누락될 수 있으며 ParamEncoder에는
+normalized-zero sentinel과 missing flag(`missing_sigma_v`, `missing_theta_E`, `missing_q`)로 들어간다.
+`M200`, `concentration`, `kappa_ext`, `nfw_offset` 같은 truth-only 키는 YAML ingest에서 거부한다.
 
 학습 데이터 생성: 동일한 (H₀, z_L, z_S, …) 시스템을 두 번 풀이 —
 한 번은 full numerical (truth), 한 번은 SIE 표준 근사. 차이를 `correction_targets/`에 저장.

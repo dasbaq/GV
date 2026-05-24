@@ -37,7 +37,7 @@ class MultiModalErrorCorrector(nn.Module):
         dropout  = cfg.get("dropout", 0.1)
         max_dm   = cfg.get("mode2_max_dm_dim", 4)
         img_size = cfg.get("image_size", 128)
-        param_dim= cfg.get("param_in_dim", 12)  # 7 물리/ratio + 2 approx + 3 mode
+        param_dim= cfg.get("param_in_dim", 20)  # scalar schema + 2 approx + 3 mode
 
         self.lc_enc    = LightCurveEncoder(d_model, dropout)
         self.par_enc   = ParamEncoder(param_dim, d_model, dropout)

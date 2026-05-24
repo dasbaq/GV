@@ -3,6 +3,25 @@
 
 ---
 
+## [2026-05-24] — Phase 4 v0.4 20-dim observed_features 카탈로그 재생성
+- `data/mock/phase4_v0_4.h5` 재생성: n=500, seed=42, `validity_filter=v0_4`, `observed_features/` 및 `light_curve_quality/` 포함. Mode 1 correction mean/std/min/max `29.065/13.677/3.198/69.339`, train `|mu_truth|max=0.9785`.
+- `data/mock/phase4_v0_4_eval_unfiltered.h5` 재생성: n=200, seed=42, `validity_filter=off`, `eval_role=unfiltered`, 동일 observed feature schema 포함. Mode 1 correction mean/std/min/max `30.378/13.515/6.543/69.339`.
+- `data/target_scaler_phase4_v0_4.pkl` 재생성: Mode 1 mean/scale `29.6389/13.7096`. `data/logs/phase4_v0_4_floor_analysis.json`도 새 카탈로그 기준으로 갱신.
+- schema 확인: `config/ml.yaml:data.param_normalization` 15개 + approx/mode one-hot 5개 = ParamEncoder 20-dim. HDF5 `observed_features/{dt_lc,dt_lc_sigma,dt_lc_sigma_relative_error,n_epochs_quality,baseline_days,median_cadence_days,median_photometric_error}` 확인.
+- 로컬 MPS equivalence는 현재 Codex 프로세스에서 `MPS is not available`로 미실행. stale `phase4_v0_4_equivalence.json`는 `phase4_v0_4_equivalence_legacy_20260522.json`으로 보존하고, Kaggle에서는 `--phase all`로 CUDA equivalence+train을 실행해야 한다.
+- Kaggle staging dry-run/복사 확인: `/var/folders/.../T/kaggle_lens-phase4-v0-4/`에 train/eval HDF5, scaler, floor JSON 생성. `kaggle` CLI는 설치했으나 인증이 없어(`kaggle auth login` 필요) Dataset version 업로드는 중단.
+- 회귀: `pytest -q tests/test_error_catalog.py tests/test_run_mode1_correction.py tests/test_encoders.py tests/test_corrector.py tests/test_phase4_validity.py tests/test_standard_approx.py tests/test_losses_amp_safe.py` → 34 passed.
+
+## [2026-05-24] — 실관측 YAML 입력 + ParamEncoder 품질/누락 feature schema
+- `ml/training/feature_schema.py` 추가: dataset/관측 어댑터가 공유하는 ParamEncoder scalar schema를 단일화. `dt_lc`, `dt_lc_sigma` 필수 검증, `sigma_v`/`theta_E`/`q` 누락 시 normalized-zero sentinel + field별 missing flag, 광곡선 품질 지표 4개를 처리. truth-only 키(`M200`, `concentration`, `kappa_ext`, `nfw_offset`) 거부.
+- `config/ml.yaml`: ParamEncoder 입력에 `n_epochs_quality`, `baseline_days`, `median_cadence_days`, `median_photometric_error`, `missing_sigma_v`, `missing_theta_E`, `missing_q` 추가. 품질 지표 normalization은 config의 `transform: log`와 범위(`N_epochs` 0-1500, baseline 0-5000, cadence 0-50, phot err 0-0.5)로 제어.
+- `inversion/real_catalog.py` 추가: Gaia GraL X + 외부 Bag+22 결과용 YAML 리스트 loader. Bag+22는 호출하지 않고 `dt_lc`/`dt_lc_sigma`/품질 지표를 검증해 Mode 1 feature spec으로 변환하며, Mode 2 확장 필드는 보존만 한다.
+- `config/ml.yaml:data.observed_features`: `dt_lc_sigma_sampler`를 `relative_then_clip` + `relative_error.log_uniform[0.01,0.30]` + absolute clip `[0.3,20.0] days`로 분리. `dt_sign_convention`은 음수 입력을 `abs()` 처리하고 pair order를 뒤집는 정책으로 config화.
+- `ml/data/error_catalog.py`: Phase 4 HDF5에 `observed_features/` 및 `light_curve_quality/` 저장. 시뮬레이션 `dt_lc`는 기존처럼 `abs(dt_true)`를 유지하고, `dt_lc_sigma`는 config sampler에서 샘플링해 상대오차와 attrs를 기록.
+- `tests/fixtures/real_catalog/`: `complete.yaml`, `partial_no_lens_model.yaml`, `minimal.yaml`, `invalid_examples.yaml` 추가. 음수 `dt_lc`는 abs + pair flip + conversion log, `dt_lc_sigma` 누락과 truth-only key는 reject 테스트.
+- `ml/training/dataset.py`, `inversion/obs_to_features.py`, `pipelines/run_mode1.py`: 새 schema를 사용하도록 전환. YAML 입력은 raw LC/image 없이도 zero modality tensor로 graceful 처리하고, 기존 HDF5 경로는 legacy fallback 유지. 기존 13-dim checkpoint의 ParamEncoder 첫 layer를 20-dim 모델로 부분 이식하는 compatibility shim 추가.
+- 회귀: `pytest -q tests/test_real_catalog.py tests/test_error_catalog.py tests/test_run_mode1_correction.py tests/test_encoders.py tests/test_corrector.py tests/test_run_mode1_e2e.py tests/test_phase4_validity.py tests/test_standard_approx.py` → 39 passed.
+
 ## [2026-05-22] — Phase 5 Mode 1 ML 보정 결합 (관측 → H0_corrected)
 - `inversion/obs_to_features.py` 추가: 스펙 dict → MultiModalErrorCorrector Mode 1 입력 텐서. `ml/training/dataset.py::__getitem__`의 Mode 1 경로(lc/params/sigma_curve/image/use_image, 정규화·one-hot·scaler)를 그대로 재현. `system_spec_from_hdf5`, `load_corrector`, `load_target_scaler` 헬퍼 포함. truth-side 키 미접근.
 - `pipelines/run_mode1.py`: `_apply_ml_correction`을 실제 구현(stub 제거) — checkpoint+scaler 로드 → target_mode=1 forward → `correction = pred*scale + mean`, `sigma = exp(log_sigma)*scale`, `H0_corrected = H0_approx + correction`. `_feature_spec_from_phase4_hdf5`로 입력 HDF5의 image/LC/sigma 그룹 + 해석 파이프라인 param(H0_approx/dt_obs/SIE fit)으로 스펙 구성. Phase4 inference 그룹 부재 시 graceful skip. `--correction-scaler`/`--correction-config` CLI 추가(기본 v0.4).

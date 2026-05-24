@@ -23,6 +23,7 @@ from core.physics.standard_approx import (
     reduced_time_delay_distance_h0_one,
     solve_standard_approx,
 )
+from ml.training.feature_schema import compute_light_curve_quality, dt_lc_sigma_from_sampler_config
 from src_py.simulation.quasar_lc import QuasarLightCurve
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +56,19 @@ def _phase4_v0_3_policy_from_config() -> tuple[tuple[float, float], int]:
 
 TRUTH_V0_3_H0_STRATIFIED_RANGE, TRUTH_V0_3_H0_STRATIFIED_BINS = _phase4_v0_3_policy_from_config()
 DEFAULT_RESAMPLE_BUDGET = 50
+
+
+def _observed_feature_policy_from_config() -> dict[str, Any]:
+    with (PROJECT_ROOT / "config" / "ml.yaml").open("r", encoding="utf-8") as fp:
+        cfg = yaml.safe_load(fp)
+    return dict(cfg.get("data", {}).get("observed_features", {}))
+
+
+def _sample_dt_lc_sigma(dt_lc: float, rng: np.random.Generator, policy: dict[str, Any]) -> tuple[float, float]:
+    sampler = policy.get("dt_lc_sigma_sampler")
+    if not isinstance(sampler, dict):
+        raise ValueError("config data.observed_features.dt_lc_sigma_sampler is required")
+    return dt_lc_sigma_from_sampler_config(dt_lc, sampler, rng=rng)
 
 
 @dataclass(frozen=True)
@@ -817,6 +831,16 @@ def _attach_light_curve(
     pair["sigma_noise"] = noise
     pair["t_obs"] = lc["t_obs"]
     pair["sigma_curve"] = sigma_curve
+    pair["dt_lc"] = abs(float(pair["dt_true"]))
+    obs_policy = _observed_feature_policy_from_config()
+    dt_sigma, rel_sigma = _sample_dt_lc_sigma(float(pair["dt_lc"]), lc_rng, obs_policy)
+    pair["dt_lc_sigma"] = dt_sigma
+    pair["dt_lc_sigma_relative_error"] = rel_sigma
+    pair["light_curve_quality"] = compute_light_curve_quality(
+        t_obs=lc["t_obs"],
+        sigma_noise=noise,
+        n_epochs=config.n_epochs,
+    )
     return True
 
 
@@ -1062,6 +1086,33 @@ def build_phase4_catalog(output_path: Path, config: CatalogConfig = CatalogConfi
         lc_g.create_dataset("sigma_noise", data=sigma_noise)
         lc_g.create_dataset("t_obs", data=t_obs)
         lc_g.create_dataset("n_epochs", data=np.full(n, config.n_epochs, dtype=np.int32))
+
+        obs_g = f.create_group("observed_features")
+        obs_g.create_dataset("dt_lc", data=np.asarray([p["dt_lc"] for p in pairs], dtype=np.float32))
+        obs_g.create_dataset("dt_lc_sigma", data=np.asarray([p["dt_lc_sigma"] for p in pairs], dtype=np.float32))
+        obs_g.create_dataset(
+            "dt_lc_sigma_relative_error",
+            data=np.asarray([p["dt_lc_sigma_relative_error"] for p in pairs], dtype=np.float32),
+        )
+        for key in ("n_epochs_quality", "baseline_days", "median_cadence_days", "median_photometric_error"):
+            obs_g.create_dataset(
+                key,
+                data=np.asarray([p["light_curve_quality"][key] for p in pairs], dtype=np.float32),
+            )
+        obs_g.attrs["dt_lc_source"] = "simulated_Bag22_proxy_primary_pair_positive_delay"
+        obs_policy = _observed_feature_policy_from_config()
+        sampler = obs_policy["dt_lc_sigma_sampler"]
+        rel_cfg = sampler["relative_error"]
+        obs_g.attrs["dt_lc_sigma_model"] = str(sampler["mode"])
+        obs_g.attrs["dt_lc_sigma_relative_distribution"] = str(rel_cfg["distribution"])
+        obs_g.attrs["dt_lc_sigma_relative_min"] = float(rel_cfg["min"])
+        obs_g.attrs["dt_lc_sigma_relative_max"] = float(rel_cfg["max"])
+        obs_g.attrs["dt_lc_sigma_absolute_floor_days"] = float(sampler["absolute_floor_days"])
+        obs_g.attrs["dt_lc_sigma_absolute_ceiling_days"] = float(sampler["absolute_ceiling_days"])
+
+        lcq_g = f.create_group("light_curve_quality")
+        for key in ("n_epochs_quality", "baseline_days", "median_cadence_days", "median_photometric_error"):
+            lcq_g.create_dataset(key, data=obs_g[key][:])
 
         images = f.create_group("images")
         images.create_dataset("I_obs", data=np.stack([p["I_obs"] for p in pairs]).astype(np.float32))

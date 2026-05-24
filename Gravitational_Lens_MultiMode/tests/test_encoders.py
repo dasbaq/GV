@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import pytest
+import yaml
 from ml.models.encoders import (
     LightCurveEncoder, ParamEncoder, SigmaCurveEncoder, ImageEncoder
 )
@@ -29,7 +30,9 @@ def mask():
 
 @pytest.fixture
 def params():
-    return torch.randn(B, 11)
+    with open(Path(__file__).parent.parent / "config" / "ml.yaml") as f:
+        param_dim = len(yaml.safe_load(f)["data"]["param_normalization"]) + 5
+    return torch.randn(B, param_dim)
 
 @pytest.fixture
 def sigma():
@@ -37,7 +40,7 @@ def sigma():
 
 @pytest.fixture
 def image():
-    return torch.randn(B, 1, H, H)
+    return torch.randn(B, 2, H, H)
 
 
 # ---- LightCurveEncoder ----
@@ -61,7 +64,7 @@ def test_lc_encoder_mask_effect(lc):
 
 # ---- ParamEncoder ----
 def test_param_encoder_shape(params):
-    enc = ParamEncoder(in_dim=11, d_model=D)
+    enc = ParamEncoder(in_dim=params.shape[1], d_model=D)
     out = enc(params)
     assert out.shape == (B, D)
 
