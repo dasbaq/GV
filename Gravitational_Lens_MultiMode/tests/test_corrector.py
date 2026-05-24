@@ -35,11 +35,13 @@ def _make_batch(B=6, T=64, S=32, IMG=32, max_dm=4):
     """mode 1·2·3 혼합 배치 생성."""
     modes = torch.tensor([1, 1, 2, 2, 3, 3])
     use_image = (modes == 3)
+    with open(Path(__file__).parent.parent / "config" / "ml.yaml") as f:
+        param_dim = len(yaml.safe_load(f)["data"]["param_normalization"]) + 5
     lc          = torch.randn(B, 2, T)
     lc_mask     = torch.ones(B, T, dtype=torch.bool)
-    params      = torch.randn(B, 11)
+    params      = torch.randn(B, param_dim)
     sigma_curve = torch.randn(B, 1, S)
-    image       = torch.randn(B, 1, IMG, IMG)
+    image       = torch.randn(B, 2, IMG, IMG)
     image[~use_image] = 0.0
 
     target      = torch.randn(B, max_dm + 2)
@@ -103,12 +105,13 @@ def test_backward_one_step(model, cfg):
 def test_mode_only_1_batch(model, cfg):
     """Mode 1만 있는 배치 — mode2·mode3 None."""
     B = 4
+    param_dim = len(cfg["data"]["param_normalization"]) + 5
     batch = {
         "lc":           torch.randn(B, 2, 64),
         "lc_mask":      torch.ones(B, 64, dtype=torch.bool),
-        "params":       torch.randn(B, 11),
+        "params":       torch.randn(B, param_dim),
         "sigma_curve":  torch.randn(B, 1, 32),
-        "image":        torch.zeros(B, 1, IMG, IMG),
+        "image":        torch.zeros(B, 2, IMG, IMG),
         "use_image":    torch.zeros(B, dtype=torch.bool),
         "target_mode":  torch.ones(B, dtype=torch.long),
     }

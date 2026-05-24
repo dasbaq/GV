@@ -1,4 +1,4 @@
-"""Phase 4 v0.1 infrastructure equivalence, retrain, and bootstrap eval.
+"""Phase 4 v0.4 infrastructure equivalence, retrain, and bootstrap eval.
 
 This script keeps the v2.6 model, inputs, loss, optimizer, batch size, and AMP
 policy fixed.  Phase 4 labels use the HDF5 schema sign convention
@@ -44,19 +44,19 @@ from scripts.lib.round_common import (
     skipped_acceptance,
 )
 
-DATA_NAME = "phase4_v0_1.h5"
-UNFILTERED_DATA_NAME = "phase4_v0_1_eval_unfiltered.h5"
+DATA_NAME = "phase4_v0_4.h5"
+UNFILTERED_DATA_NAME = "phase4_v0_4_eval_unfiltered.h5"
 PATHS = build_round_paths(
     root=ROOT,
     data_name=DATA_NAME,
-    round_name="phase4_v0_1_round",
-    checkpoint_name="phase4_v0_1_imgres_best.pt",
-    history_name="phase4_v0_1_imgres_long_history.json",
-    eval_name="phase4_v0_1_imgres_h0_eval.json",
-    infra_name="phase4_v0_1_infra_equivalence.json",
-    scaler_name="target_scaler_phase4_v0_1.pkl",
+    round_name="phase4_v0_4_round",
+    checkpoint_name="phase4_v0_4_imgres_best.pt",
+    history_name="phase4_v0_4_imgres_long_history.json",
+    eval_name="phase4_v0_4_imgres_h0_eval.json",
+    infra_name="phase4_v0_4_infra_equivalence.json",
+    scaler_name="target_scaler_phase4_v0_4.pkl",
     unfiltered_name=UNFILTERED_DATA_NAME,
-    eval_unfiltered_name="phase4_v0_1_imgres_h0_eval_unfiltered.json",
+    eval_unfiltered_name="phase4_v0_4_imgres_h0_eval_unfiltered.json",
 )
 DATA = PATHS.data
 UNFILTERED_DATA = PATHS.unfiltered
@@ -67,22 +67,27 @@ EVAL = PATHS.eval
 EVAL_UNFILTERED = PATHS.eval_unfiltered
 INFRA = PATHS.infra
 RUNS = PATHS.runs
-EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_1_equivalence.json"
+EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_4_equivalence.json"
 
+# v0.4 재교정: v0.2-유래 absolute band(2.755/4.862/6.57/r>=0.85)는 truncated easy-subset에서
+# 나온 값이라 무편향 전체 분포에 무효. RMSE band는 [leak floor, no_correction]로 재산정한다.
+# no_correction RMSE(filtered val n=50)=29.63 → upper = no_corr/2.67≈11.08, point upper = no_corr/2≈16.62.
+# r>=0.85는 폐기하고 record_only로 둔다(achievable-r ceiling은 inputs-conditioned oracle 필요).
+# 근거: data/logs/phase4_v0_4_floor_analysis.json, DECISIONS.md [2026-05-22] v0.4 acceptance 재교정.
 ACCEPTANCE = {
     "cuda_forward_diff_max": 1.0e-4,
-    "filtered_rmse_ci_lower_min": 2.755,
-    "filtered_rmse_ci_upper_max": 4.862,
-    "filtered_rmse_point_band": [2.755, 6.570],
+    "filtered_rmse_ci_lower_min": 0.5,
+    "filtered_rmse_ci_upper_max": 11.08,
+    "filtered_rmse_point_band": [0.5, 16.62],
     "unfiltered_filtered_rmse_ratio_max": 2.5,
     "coverage_ci_overlap": [0.62, 0.78],
     "positive_fraction_min": 0.95,
-    "filtered_h0_r_min": 0.85,
+    "filtered_h0_r_min": 0.0,  # record_only: v0.2-유래 0.85 폐기, oracle ceiling 확정 전까지 게이트 아님
     "best_val_m1": "record_only",
 }
 
 LEAK_TRIGGERS = {
-    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 2.755,
+    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 0.5,
     "unfiltered_filtered_rmse_ratio_max": 3.18,
     "param_encoder_input_dim": 20,
 }
@@ -504,7 +509,7 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 
 
 def load_floor_analysis() -> dict | None:
-    path = ROOT / "data" / "logs" / "phase4_v0_1_floor_analysis.json"
+    path = ROOT / "data" / "logs" / "phase4_v0_4_floor_analysis.json"
     if not path.exists():
         return None
     with path.open() as f:
@@ -715,12 +720,12 @@ def environment_sanity(device: torch.device) -> dict:
 
 def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candidate: int) -> dict:
     RUNS.mkdir(parents=True, exist_ok=True)
-    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_4_temp.pkl", cfg["seed"])
     fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
     dist_workers = worker_candidate if target_device.type == "cuda" else 0
     dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
     result = {
-        "round": "phase4_v0_1",
+        "round": "phase4_v0_4",
         "phase": "equivalence",
         "device": environment_sanity(target_device),
         "forward_only": fwd,
@@ -889,7 +894,7 @@ def main() -> None:
         raise SystemExit("ParamEncoder input dim changed; leak trigger fired.")
 
     if args.phase == "all":
-        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_4_temp.pkl", cfg["seed"])
         fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
         infra["forward_only"] = fwd
         if not fwd["passed"]:

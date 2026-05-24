@@ -15,6 +15,16 @@ def test_phase4_catalog_schema_and_correction_sign(tmp_path) -> None:
     with h5py.File(path, "r") as f:
         for group in ("true_values", "approx_outputs", "correction_targets", "simplification_errors"):
             assert group in f
+        assert "observed_features" in f
+        assert "light_curve_quality" in f
+        for key in ("dt_lc", "dt_lc_sigma", "n_epochs_quality", "baseline_days", "median_cadence_days", "median_photometric_error"):
+            assert key in f["observed_features"]
+            assert np.all(np.isfinite(f["observed_features"][key][:]))
+        assert np.all(f["observed_features/dt_lc"][:] > 0.0)
+        assert np.all(f["observed_features/dt_lc_sigma"][:] > 0.0)
+        assert np.all(f["observed_features/dt_lc_sigma"][:] <= 20.0)
+        assert f["observed_features"].attrs["dt_lc_sigma_model"] == "relative_then_clip"
+        assert f["observed_features"].attrs["dt_lc_sigma_relative_distribution"] == "log_uniform"
         corr = f["correction_targets/mode1_H0_correction"][:]
         expected = f["true_values/H0_true"][:] - f["approx_outputs/H0_approx"][:]
         np.testing.assert_allclose(corr, expected, rtol=1.0e-6, atol=1.0e-6)

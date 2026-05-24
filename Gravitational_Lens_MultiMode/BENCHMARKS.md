@@ -3,6 +3,60 @@
 
 ---
 
+## [2026-05-24] Phase 4 v0.4 20-dim catalog regen smoke
+
+실측 benchmark가 아니라 20-dim observed feature schema로 ML 재학습 입력을 다시 만든 smoke 검증이다.
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| train catalog | `phase4_v0_4.h5`, n=500, `observed_features/` 포함 | PASS |
+| unfiltered eval catalog | `phase4_v0_4_eval_unfiltered.h5`, n=200, `observed_features/` 포함 | PASS |
+| ParamEncoder 입력 차원 | `15 + 5 = 20` | PASS |
+| Mode 1 scaler | mean/scale `29.6389/13.7096` | PASS |
+| floor/correction 분포 | train std `13.677`, unfiltered std `13.515`, NaN/Inf 0 | PASS |
+| 회귀 테스트 | 34 passed | PASS |
+| MPS equivalence | 현재 Codex 프로세스에서 MPS unavailable | SKIP |
+| Kaggle upload | staging copy 완료, CLI 설치 완료, Kaggle 인증 없음 | BLOCKED |
+
+검증 명령:
+- `pytest -q tests/test_error_catalog.py tests/test_run_mode1_correction.py tests/test_encoders.py tests/test_corrector.py tests/test_phase4_validity.py tests/test_standard_approx.py tests/test_losses_amp_safe.py` → 34 passed.
+
+## [2026-05-24] Real YAML ingest + ParamEncoder schema smoke
+
+실측 원본 데이터 없이 fixture YAML과 synthetic Phase 4 HDF5 생성으로 interface 회귀를 검증했다.
+벤치마크 판정은 아니며 schema/adapter smoke다.
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| YAML loader + Mode 1 feature tensor/CLI path | `tests/test_real_catalog.py` 7 passed | PASS |
+| Phase 4 HDF5 `observed_features` 저장 | `tests/test_error_catalog.py` 포함 | PASS |
+| Config-driven `sigma_dt` sampler + delay sign policy | sampler attrs/negative dt fixture 검증 | PASS |
+| HDF5 dataset ↔ obs_to_features parity | `tests/test_run_mode1_correction.py` 포함 | PASS |
+| Encoder/corrector shape regression (20-dim params) | `tests/test_encoders.py`, `tests/test_corrector.py` 포함 | PASS |
+| Mode 1 HDF5 E2E + standard approx regression | 13 passed | PASS |
+
+검증 명령:
+- `pytest -q tests/test_real_catalog.py tests/test_error_catalog.py tests/test_run_mode1_correction.py tests/test_encoders.py tests/test_corrector.py tests/test_run_mode1_e2e.py tests/test_phase4_validity.py tests/test_standard_approx.py` → 39 passed.
+
+## [2026-05-22] Phase 4 v0.4 Mode 1 selection-bias eval (Kaggle T4, AMP on)
+
+물리-validity-only 카탈로그(train==eval 분포) + SSIM fp32 수정. NaN 0(19ep, best ep11).
+**selection bias 처음으로 소멸** — leak false.
+
+| Metric | v0.2 | v0.3.1(amp off) | **v0.4** |
+|--------|------|-----------------|----------|
+| unfiltered/filtered RMSE 비율 | 3.38 | 3.26 | **0.83** |
+| leak_triggered | true | true | **false** |
+| filtered RMSE / r | 4.33 / 0.65 | 4.45 / 0.66 | 5.81 / 0.33 |
+| unfiltered RMSE / r | 14.62 / 0.28 | 14.51 / 0.31 | **4.81 / 0.59** |
+| unfiltered coverage | 0.21 | 0.275 | **0.695** |
+| no-correction RMSE (filt/unfilt) | — | — | 29.63 / 33.25 |
+
+재교정 acceptance(no_correction 기준, DECISIONS [2026-05-22]): RMSE band `[0.5, 11.08]`,
+ratio `<=2.5`, coverage `[0.62,0.78]` → 통과. `filtered_h0_r`은 record_only(구분포 기준 0.85 폐기).
+
+판정: selection bias·NaN 해결. 절대 r ceiling은 inputs-conditioned oracle 산정이 remaining rigor.
+
 ## [2026-05-22] Phase 1 observation-format Δt extraction MOCK
 
 원본 system6 실측 파일이 없어 `ObservedLensSystem.light_curves` 포맷을 흉내낸 합성

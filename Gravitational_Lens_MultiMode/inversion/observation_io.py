@@ -9,6 +9,8 @@ from typing import Any, Mapping
 import h5py
 import numpy as np
 
+from inversion.real_catalog import RealCatalogEntry, load_yaml_catalog
+
 @dataclass(frozen=True)
 class ObservedLightCurves:
     """Observed image light curves.

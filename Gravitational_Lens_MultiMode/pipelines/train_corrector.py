@@ -56,7 +56,7 @@ def _resolve_paths(pattern: str) -> list[Path]:
 
 def _build_model(cfg: dict) -> MultiModalErrorCorrector:
     param_norm = cfg["data"]["param_normalization"]
-    param_in_dim = len(param_norm) + 5  # 6 물리 + 2 approx + 3 mode
+    param_in_dim = len(param_norm) + 5  # scalar feature schema + 2 approx + 3 mode
     model_cfg = dict(cfg["model"])
     model_cfg["param_in_dim"] = param_in_dim
     model_cfg["image_size"]   = cfg["data"]["image_size"]
@@ -96,6 +96,7 @@ def _build_loaders(h5_paths: list[Path], cfg: dict,
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=data_cfg["param_normalization"],
         target_scaler=target_scaler,
+        observed_feature_config=data_cfg.get("observed_features", {}),
         seed=cfg["seed"],
     )
     val_ds = LensCorrectionDataset(
@@ -108,6 +109,7 @@ def _build_loaders(h5_paths: list[Path], cfg: dict,
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=data_cfg["param_normalization"],
         target_scaler=target_scaler,
+        observed_feature_config=data_cfg.get("observed_features", {}),
         seed=cfg["seed"],
     )
 
@@ -261,6 +263,7 @@ def stage_infer(args: argparse.Namespace, cfg: dict) -> None:
         image_size=cfg["data"]["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"],
+        observed_feature_config=cfg["data"].get("observed_features", {}),
     )
     loader = torch.utils.data.DataLoader(
         ds, batch_size=1, shuffle=False, **_loader_kwargs(device)
@@ -332,6 +335,7 @@ def stage_evaluate(args: argparse.Namespace, cfg: dict) -> None:
         image_size=cfg["data"]["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"],
+        observed_feature_config=cfg["data"].get("observed_features", {}),
     )
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=cfg["training"]["batch_size"],

@@ -19,10 +19,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
 
+from ml.training.feature_schema import (
+    build_param_vector_from_features,
+    hdf5_feature_values,
+)
 from ml.utils.mask import make_lc_mask
-from ml.utils.normalize import build_param_vector
-
-_DT_LC_REL_SIGMA_EXPECTED = 0.045
 
 # Σ 곡선 계산 — Phase 1 모듈 미구현 시 NotImplementedError
 _SIGMA_CURVE_AVAILABLE = False
@@ -111,6 +112,7 @@ class LensCorrectionDataset(Dataset):
         mode2_max_dm_dim: int = 4,
         param_norm: Optional[dict] = None,
         target_scaler: Optional[dict] = None,
+        observed_feature_config: Optional[dict] = None,
         seed: int = 42,
     ) -> None:
         super().__init__()
@@ -124,6 +126,7 @@ class LensCorrectionDataset(Dataset):
         self.mode2_max_dm_dim = mode2_max_dm_dim
         self.param_norm = param_norm or {}
         self.target_scaler = target_scaler or {}
+        self.observed_feature_config = observed_feature_config or {}
         self.seed = seed
 
         self._index: List[Tuple[str, int, int, int]] = []  # (path, sys_idx, approx, mode)
@@ -181,27 +184,17 @@ class LensCorrectionDataset(Dataset):
         lc_mask = make_lc_mask(n_valid, self.max_len)
 
         # --- 물리 파라미터 벡터 ---
-        # Mode 1 inference-side inputs only: no truth-side dt_obs, dt_ratio,
-        # kappa_ext, per-system dt_sigma_rel, or dt_noise_factor leakage.
-        dt_lc = float(f["approx_outputs/dt_approx"][sys_idx])
-        dt_lc_sigma = max(dt_lc * _DT_LC_REL_SIGMA_EXPECTED, 1.0e-6)
-        raw_params = {
-            "H0_approx":     float(f["approx_outputs/H0_approx"][sys_idx]),
-            "z_lens":        float(f["params/z_lens"][sys_idx]),
-            "z_source":      float(f["params/z_source"][sys_idx]),
-            "sigma_v":       float(f["params/sigma_v"][sys_idx]),
-            "q":             float(f["params/q"][sys_idx]),
-            "theta_E":       float(f["params/theta_E"][sys_idx]),
-            "dt_lc":         dt_lc,
-            "dt_lc_sigma":   dt_lc_sigma,
-        }
-        # approx_level + target_mode one-hot 추가
-        param_base = build_param_vector(raw_params, self.param_norm)
-        al_onehot  = np.array([float(approx_level == 1),
-                                float(approx_level == 2)], dtype=np.float32)
-        mode_oh    = np.zeros(3, dtype=np.float32)
-        mode_oh[target_mode - 1] = 1.0
-        params_vec = np.concatenate([param_base, al_onehot, mode_oh])  # [P+5]
+        # Mode 1/2 shared inference-side inputs only. Truth-side keys such as
+        # M200/kappa_ext are intentionally excluded by feature_schema.
+        raw_params = hdf5_feature_values(f, sys_idx)
+        params_vec = build_param_vector_from_features(
+            raw_params,
+            self.param_norm,
+            approx_level=approx_level,
+            target_mode=target_mode,
+            observed_feature_config=self.observed_feature_config,
+            allow_legacy_delay_sigma=True,
+        )
 
         # --- Σ 곡선 ---
         if "sigma_curve" in f:

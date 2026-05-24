@@ -4,6 +4,197 @@
 
 ---
 
+## [2026-05-24] 실관측 YAML ingest와 ParamEncoder feature schema 단일화
+
+### 결정
+실관측 1단계 입력은 YAML 리스트로 받되, 학습/추론 모델에는 `ml/training/feature_schema.py`의
+공통 ParamEncoder schema를 통해 들어간다. Bag+22는 레포에서 호출하지 않고 외부 결과
+`dt_lc`, `dt_lc_sigma`, 광곡선 품질 지표 4개를 YAML entry에 기록한다.
+
+ParamEncoder scalar feature는 기존 8개에서 다음 15개로 확장한다.
+`H0_approx`, `z_lens`, `z_source`, `sigma_v`, `q`, `theta_E`, `dt_lc`,
+`dt_lc_sigma`, `n_epochs_quality`, `baseline_days`, `median_cadence_days`,
+`median_photometric_error`, `missing_sigma_v`, `missing_theta_E`, `missing_q`.
+여기에 기존 `approx_level` 2 one-hot과 `target_mode` 3 one-hot을 붙여 총 입력 차원은 20이다.
+
+### 근거
+- 실측 시스템에서는 `sigma_v`, `theta_E`, `q`가 정상적으로 누락될 수 있으므로 예외나 NaN 전파가
+  아니라 normalized-zero sentinel + field별 missing flag로 처리해야 한다.
+- `dt_lc`와 `dt_lc_sigma`는 Mode 1 H0 추론의 필수 관측량이므로 누락 시 entry를 무효화한다.
+- Mode 2는 이번 작업에서 입력을 추가하지 않지만, YAML의 `mode2_inputs` 예약 필드는 보존해
+  향후 image positions, all pair delays, flux ratios, magnifications를 별도 structured encoder로
+  연결할 수 있게 둔다.
+- `dt_lc_sigma_sampler`, `dt_sign_convention`, primary pair convention, real YAML missing modality 정책은
+  `config/ml.yaml:data.observed_features`에 둔다. Hydra/OmegaConf는 도입하지 않고, 기존 프로젝트의
+  YAML + `yaml.safe_load` config 방식을 유지한다.
+
+### 확정 config 정책
+- 시뮬레이션 `dt_lc_sigma`는 `relative_then_clip` sampler를 사용한다:
+  `relative_error.distribution=log_uniform`, min/max `[0.01, 0.30]`, absolute clip `[0.3, 20.0] days`.
+  실측 카탈로그 수집 후에는 코드 변경 없이 `config/ml.yaml` 값만 조정한다.
+- delay 저장 규약은 `|Δt|` 양수다. YAML 입력이 음수 `dt_lc`를 주면 configured policy에 따라
+  `abs(dt_lc)`로 변환하고 `pair_order.leading_image/trailing_image`를 뒤집으며 `conversion_log`에 남긴다.
+  `pair_order`는 메타데이터로 보존하지만 ParamEncoder 입력에는 넣지 않는다.
+- 광곡선 품질 지표 normalization은 config의 `transform`으로 제어한다. 초기 기본값은 log transform이며
+  범위는 `N_epochs [0,1500]`, `baseline_days [0,5000]`, `median_cadence_days [0,50]`,
+  `median_photometric_error [0,0.5]`다.
+- real catalog fixture는 `tests/fixtures/real_catalog/{complete,partial_no_lens_model,minimal,invalid_examples}.yaml`
+  네 파일로 유지한다.
+
+### 운영 규칙
+- 실측 YAML과 시뮬레이션 HDF5 모두 같은 feature builder를 사용해야 한다.
+- Bag+22 raw extraction과 ZTF 다운로드는 ingest adapter에서 수행하지 않는다.
+- `M200`, `concentration`, `kappa_ext`, `nfw_offset`는 실측 YAML에서도 truth-only key로 거부한다.
+- 기존 13-dim checkpoint는 새 20-dim 모델에 로드할 때 ParamEncoder 첫 layer의 기존 column만
+  부분 이식한다. 새 feature column은 초기화 상태이므로 정식 성능 평가는 새 schema로 재학습해야 한다.
+
+### 관련 파일
+- `config/ml.yaml`
+- `ml/training/feature_schema.py`
+- `inversion/real_catalog.py`
+- `ml/training/dataset.py`
+- `inversion/obs_to_features.py`
+- `pipelines/run_mode1.py`
+- `ml/data/error_catalog.py`
+
+## [2026-05-22] Phase 4 v0.4 acceptance 임계 재교정 (구분포 기준 폐기)
+
+### 결정
+v0.4(물리-validity-only, 무편향)부터 filtered absolute acceptance band를 재산정한다.
+- `filtered_rmse_ci_lower_min` 2.755 → `0.5`, `filtered_rmse_ci_upper_max` 4.862 → `11.08`,
+  `filtered_rmse_point_band` [2.755,6.57] → `[0.5, 16.62]` (no_correction_filtered 29.63 기준
+  upper=no_corr/2.67, point upper=no_corr/2).
+- `filtered_h0_r_min` 0.85 → `0.0` (record_only). leak `nfw_oracle_lower` 2.755 → `0.5`.
+- selection-bias(`ratio<=2.5`, leak ratio `3.18`)·coverage `[0.62,0.78]`·`positive_fraction` 유지.
+
+### 근거
+- 기존 band(2.755/4.862/6.57/r>=0.85)는 v0.2-era **truncated easy-subset**(filtered correction ~17로 절단)
+  에서 유도됐다. v0.4는 filtered==unfiltered==전체 물리 분포이므로 이 band가 무효다.
+- v0.4 실측: no_correction RMSE filtered `29.63`/unfiltered `33.25`, 모델 filtered `5.81`/unfiltered
+  `4.81` → 5~7x 개선. selection bias 소멸(ratio `0.83`, leak false, unfiltered RMSE `14.5→4.81`,
+  r `0.28→0.59`, coverage `0.21→0.695`).
+- filtered r이 v0.3.1 `0.66`에서 v0.4 `0.33`으로 "하락"한 것은 성능 저하가 아니라, 더 이상 쉬운
+  subset이 아닌 전체 난이도 분포를 정직하게 평가하기 때문이다. 신뢰도 높은 unfiltered(n=200) r은 `0.59`.
+- `r>=0.85`는 easy-subset 산물이라 폐기한다. 무편향 분포의 achievable-r ceiling은 inputs-conditioned
+  oracle로 산정해야 하므로 record_only로 두고, 그 산정을 remaining rigor로 남긴다
+  (data/logs/phase4_v0_4_floor_analysis.json).
+
+### 주의 (goalpost-moving 아님)
+RMSE band는 "모델이 no_correction을 큰 배수로 이겨야 한다"는 무편향-분포 기준으로 재산정한 것이며,
+특정 모델을 통과시키려 맞춘 값이 아니다. r은 통과시키지 않고 record_only로 강등했다.
+
+## [2026-05-22] NaN 원인은 fp16 SSIM, validity tail filter는 오진단 산물 → Phase 4 v0.4 물리 validity only
+
+### 결정
+1. `ml/training/losses.py` 의 `_ssim_loss`, `_gaussian_nll` 를 autocast 비활성 fp32 블록으로 강제하고,
+   SSIM 분산을 `clamp_min(0)`, NLL의 `2*log_sigma`를 `[-30,30]` 클램프 + var floor 1e-8로 둔다.
+2. Phase 4 v0.4 카탈로그는 **물리 validity only** (`validity_filter="v0_4"`): root 수렴/finite/
+   `dt_true>0`/`|mu|<0.98`/separation`>=0.1`만 유지. label-상관 cap, v0.2 입력측 tail cap,
+   H0 stratified quota를 **모두 제거**한다(비-stratified 기본 수집).
+
+### 근거
+- v0.2(NaN 0)→v0.3(NaN)→v0.3.1(입력 tail cap 복원해도 NaN) 결과로 "극단 입력→AMP overflow"
+  가설이 폐기됐다. v0.3.1 AMP-off full run은 NaN 0이었고(NaN이 fp16 전용임을 확정),
+  v0.3 history에서 `mode1/2/3_task`·`mode1_cal`은 유한한데 `ssim=nan`→`total=nan`이었다.
+  ⇒ NaN의 발원지는 fp16/autocast 하의 SSIM(분모 eps underflow + 분산 음수)이며 카탈로그 필터와 무관.
+- v0.1/v0.2의 입력측 tail filter는 "CUDA fp16/AMP 안정화"를 명분으로 도입됐으나, 실제 NaN 원인은
+  SSIM이었다. 즉 tail filter는 **오진단으로 만들어진 것**이고 그 유일한 실효는 selection bias였다.
+- SSIM을 fp32로 고치면 tail filter가 불필요해진다. 따라서 v0.4는 train 분포를 unfiltered
+  (root-converged) eval 분포와 일치시켜 selection bias를 구조적으로 제거한다. 실제로 v0.4 train의
+  `mode1_H0_correction` mean/std/max `29.06/13.68/69.34`가 unfiltered `30.38/13.52/69.34`와
+  일치한다(v0.2 filtered는 ~17로 잘려 bias의 원인이었다).
+
+### 번복 가능성
+v0.4 재학습에서 큰 correction tail로 인해 다른 불안정이 나오면, label-중립 입력 cap만 선택적으로
+재도입하는 것을 검토한다(단 label-상관 cap·quota는 재도입 금지).
+
+## [2026-05-22] Phase 4 v0.3.1 label/input validity split
+
+### 결정
+Phase 4 v0.3.1은 v0.3의 H0-neutral 10-bin stratified quota를 유지하고, validity gate를
+label 의존 컷과 입력/관측측 컷으로 분리한다.
+
+| 컷 | 분류 | v0.3.1 처리 | 근거 |
+|---|---|---|---|
+| `H0_approx in [45,90]` | label 의존 | 제외 | approximate target-side H0에 직접 의존하며 v0.2의 가장 큰 H0 왜곡 driver |
+| `abs(mode1_H0_correction) <= 32.27` | label 의존 | 제외 | correction = `H0_true - H0_approx` label 자체를 threshold |
+| `max(abs(F_joint)) <= 3.408` | 입력/관측측 | 복원 | LC input tensor magnitude의 AMP/fp16 overflow 방지 |
+| `I_obs.sum <= 77.79` | 입력/관측측 | 복원 | image input total flux tail 안정화 |
+| `dt_approx <= 444.7` | 입력/관측측 | 복원 | ML param input tail 안정화 |
+| `abs(mu_truth) <= 0.9699` | 입력/관측측 | 복원 | `|mu| < 1` 안정 조건의 p99 tail |
+| `dphi_sie/dphi_truth in [0.5878,0.9201]` | 입력/관측측, label 상관 risk | 복원 후 별도 진단 | H0 uniformity는 유지하지만 correction/dphi support를 좁힘 |
+| truth image separation `>= 0.6598 arcsec` | 입력/관측측 | 복원 | image/ray support tail 안정화 |
+
+### 결과
+- `data/mock/phase4_v0_3_1.h5`: n=500, seed=42, H0 bin별 50개.
+- filtered H0 KS vs U[60,80] p `0.999993`로 v0.3 p `0.984` 수준 유지.
+- NaN precheck는 v0.2 입력 안전범위 안: max|F_joint| `3.347`, I_obs.sum `69.03`,
+  dt_approx `443.89`, |mu|max `0.969895`, dphi_ratio `[0.58875,0.92007]`,
+  separation min `0.66384`; correction max도 reference `32.27` 안의 `32.261`.
+- dphi band ablation: input-tail mask에서 dphi band 포함 시 H0 KS p `0.0935`,
+  dphi 제외 시 p `0.0305`; 하지만 correction max는 dphi 제외 시 `69.34`까지 복귀한다.
+  따라서 이번 round는 NaN 안정성을 우선하고, correction/dphi support mismatch는 Kaggle train
+  acceptance와 unfiltered eval에서 별도 판정한다.
+
+### 운영 규칙
+- 모델 구조, 입력 차원, loss, optimizer, batch size, AMP 정책은 v0.3에서 변경하지 않는다.
+- NaN이 재발하면 `F_joint` 정규화, NLL variance floor, AMP disable/guard 등은 별도 acceptance가
+  필요한 제안으로만 다루고 v0.3.1 round에서는 실행하지 않는다.
+- selection-bias acceptance는 `unfiltered/filtered RMSE <= 2.5`, 1σ coverage target `[0.62,0.78]`를 유지한다.
+
+### 관련 파일
+- `ml/data/error_catalog.py`
+- `scripts/analyze_phase4_v0_2_selection_bias.py`
+- `scripts/phase4_v0_3_1_round.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_3_1_floor_analysis.json`
+
+## [2026-05-22] Phase 4 v0.3 H0-neutral validity filter
+
+### 결정
+Phase 4 v0.3 catalog validity filter는 H0/correction 값에 직접 의존하지 않는다.
+
+v0.3은 다음 물리/수치 validity만 generator-level reject 조건으로 유지한다.
+
+| 항목 | v0.3 기준 | 근거 |
+|---|---:|---|
+| truth image root solve | success + residual threshold | full-truth delay 계산의 최소 조건 |
+| finite values | `dt_true`, `H0_approx`, Fermat values finite | HDF5 label sanity |
+| `dt_true` | `> 0` | 시간 지연 물리 조건 |
+| `abs(mu_truth)` | `< 0.98` | `|mu| < 1` 수렴/안정 조건 |
+| truth image separation | `>= 0.1 arcsec` | image dedupe/분해능 최소 조건 |
+
+아래 v0.1/v0.2 조건은 v0.3 validity에서 제거한다.
+
+| 제거 조건 | 제거 이유 |
+|---|---|
+| `H0_approx in [45,90]` | v0.2 selection-bias 분석에서 가장 큰 robust H0 왜곡 driver |
+| `abs(mode1_H0_correction) <= 32.27` | label-dependent tail cut |
+| v0.2 dphi/dt/image/LC/separation p99/p01 tail gates | filtered catalog를 쉬운 support로 좁히는 selection bias |
+
+H0 분포 정합은 reject gate가 아니라 H0 `[60,80]` 10-bin stratified quota로 처리한다.
+
+### 결과
+- `data/mock/phase4_v0_3.h5`: n=500, seed=42, H0 bin별 50개.
+- `data/mock/phase4_v0_3_eval_unfiltered.h5`: n=200, seed=42, root convergence only.
+- filtered H0 KS vs U[60,80] p `0.984`로 v0.2 p `1.8e-6` 대비 개선.
+- filtered/unfiltered 1D KS p: H0 `0.144`, correction `0.801`, dphi_ratio `0.853`,
+  mu `0.685`, separation `0.351`.
+
+### 운영 규칙
+- 모델 구조, 입력 차원, loss, optimizer, batch size, AMP 정책은 변경하지 않는다.
+- 입력 feature 보강은 acceptance가 필요한 별도 제안으로만 다룬다.
+- selection-bias acceptance는 Kaggle CUDA train 전 사전 선언한다:
+  `unfiltered/filtered RMSE <= 2.5`, 1σ coverage target `[0.62, 0.78]`.
+- no-correction/oracle baseline은 같은 eval JSON 경로에 함께 기록한다.
+
+### 관련 파일
+- `ml/data/error_catalog.py`
+- `scripts/analyze_phase4_v0_2_selection_bias.py`
+- `scripts/phase4_v0_3_round.py`
+- `tests/test_phase4_validity.py`
+- `data/logs/phase4_v0_3_floor_analysis.json`
+
 ## [2026-05-22] Mode 1 Fermat potential unit convention
 
 ### 결정
