@@ -7,6 +7,8 @@
 단위: H0 [km/s/Mpc], 각도 [arcsec], 지연 [days], z 무차원. SIE 표준 근사 가정
 (단일 평면, κ_ext=0, smooth profile, isotropic). 이 모듈은 truth-side 키
 (dt_true, mu_true, kappa_ext 등)를 절대 읽지 않는다.
+
+Image 입력 모달리티는 삭제됨 (DECISIONS.md [2026-05-25] 참조).
 """
 
 from __future__ import annotations
@@ -27,22 +29,10 @@ from ml.training.dataset import _compute_sigma_curve_fallback
 from ml.utils.mask import make_lc_mask
 
 
-def _resize_image(arr: np.ndarray, image_size: int) -> np.ndarray:
-    arr = np.asarray(arr, dtype=np.float32)
-    if arr.shape[0] == image_size and arr.shape[1] == image_size:
-        return arr
-    from skimage.transform import resize
-
-    return resize(
-        arr, (image_size, image_size), anti_aliasing=True, preserve_range=True
-    ).astype(np.float32)
-
-
 def build_corrector_inputs(
     spec: Mapping[str, Any],
     *,
     param_norm: Mapping[str, Any],
-    image_size: int = 128,
     max_len: int = 1024,
     sigma_curve_size: int = 512,
     approx_level: int = 1,
@@ -55,7 +45,7 @@ def build_corrector_inputs(
     필요한 scalar ``spec`` 키: ``H0_approx``, ``z_lens``, ``z_source``,
     ``dt_lc``/``dt_lc_sigma`` 또는 legacy ``dt_approx``. ``sigma_v``, ``q``,
     ``theta_E``는 누락 가능하며 missing flag가 함께 들어간다. Raw
-    light-curve/image tensors are optional for real YAML catalogs; missing
+    light-curve tensors are optional for real YAML catalogs; missing
     modalities are represented by zero tensors. approx_level은 eval 기본값 1.
     """
 
@@ -101,21 +91,11 @@ def build_corrector_inputs(
     else:
         sigma_curve = _compute_sigma_curve_fallback(F_raw, n_valid, sigma_curve_size)
 
-    use_image = bool(int(target_mode) in (1, 3) and spec.get("I_obs") is not None and spec.get("S_approx") is not None)
-    if use_image:
-        img_raw = _resize_image(spec["I_obs"], image_size)
-        approx_raw = _resize_image(spec["S_approx"], image_size)
-        image = np.stack([img_raw, img_raw - approx_raw], axis=0)
-    else:
-        image = np.zeros((2, image_size, image_size), dtype=np.float32)
-
     return {
         "lc": torch.from_numpy(lc).unsqueeze(0),
         "lc_mask": lc_mask.unsqueeze(0),
         "params": torch.from_numpy(params_vec).unsqueeze(0),
         "sigma_curve": torch.from_numpy(sigma_curve[np.newaxis]).unsqueeze(0),
-        "image": torch.from_numpy(image).unsqueeze(0),
-        "use_image": torch.tensor([use_image]),
         "target_mode": torch.tensor([int(target_mode)]),
     }
 
@@ -124,6 +104,7 @@ def system_spec_from_hdf5(path: str | Path, sys_idx: int = 0) -> dict[str, Any]:
     """Phase 4 HDF5 한 시스템에서 dataset가 읽는 inference-side 필드를 그대로 추출.
 
     self-consistency 테스트 및 HDF5-관측 추론용. truth-side 키는 읽지 않는다.
+    Image 필드(images/I_obs, approx_outputs/S_approx)는 삭제됨.
     """
 
     import h5py
@@ -136,8 +117,6 @@ def system_spec_from_hdf5(path: str | Path, sys_idx: int = 0) -> dict[str, Any]:
             "t_obs": np.asarray(f["light_curves/t_obs"][sys_idx], dtype=np.float32),
             "n_epochs": int(f["light_curves/n_epochs"][sys_idx]),
             **features,
-            "I_obs": np.asarray(f["images/I_obs"][sys_idx], dtype=np.float32),
-            "S_approx": np.asarray(f["approx_outputs/S_approx"][sys_idx], dtype=np.float32),
             "sigma_curve": (
                 np.asarray(f["sigma_curve"][sys_idx], dtype=np.float32)
                 if "sigma_curve" in f

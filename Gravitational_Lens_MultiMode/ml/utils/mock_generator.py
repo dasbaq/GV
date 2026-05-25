@@ -4,7 +4,8 @@ Mock HDF5 생성기.
 ARCHITECTURE.md HDF5 스키마와 동일한 구조의 toy 데이터(1024 샘플)를
 지정 경로에 생성.  경로는 호출자가 제공 — 하드코딩 없음.
 
-Mode 3용 이미지: 가우시안 소스 + SIS 렌즈 매핑 합성.
+Mode 3용 이미지 그룹(images/)과 mode3_source_residual은 삭제됨
+(DECISIONS.md [2026-05-25] 참조).
 """
 
 from __future__ import annotations
@@ -16,53 +17,11 @@ import h5py
 import numpy as np
 
 
-def _gaussian_source(H: int, W: int, rng: np.random.Generator) -> np.ndarray:
-    """[H, W] 가우시안 소스 이미지 생성."""
-    cx = rng.uniform(0.3, 0.7) * W
-    cy = rng.uniform(0.3, 0.7) * H
-    sx = rng.uniform(2.0, 8.0)
-    sy = rng.uniform(2.0, 8.0)
-    ys, xs = np.mgrid[0:H, 0:W]
-    img = np.exp(-((xs - cx) ** 2 / (2 * sx ** 2) + (ys - cy) ** 2 / (2 * sy ** 2)))
-    return img.astype(np.float32)
-
-
-def _sis_lens_image(source: np.ndarray, pixel_scale: float,
-                    theta_E: float, rng: np.random.Generator) -> np.ndarray:
-    """SIS 렌즈 매핑으로 관측 이미지 합성 (간단한 역방향 매핑)."""
-    H, W = source.shape
-    cx, cy = W / 2.0, H / 2.0
-    ys, xs = np.mgrid[0:H, 0:W]
-
-    x_phys = (xs - cx) * pixel_scale   # arcsec
-    y_phys = (ys - cy) * pixel_scale
-
-    r = np.sqrt(x_phys ** 2 + y_phys ** 2)
-    # SIS 렌즈 방정식: β = θ - θ_E * θ/|θ|
-    eps = 1e-6
-    src_x = x_phys - theta_E * x_phys / (r + eps)
-    src_y = y_phys - theta_E * y_phys / (r + eps)
-
-    # 소스 좌표 → 픽셀
-    src_px = (src_x / pixel_scale + cx).astype(int)
-    src_py = (src_y / pixel_scale + cy).astype(int)
-
-    valid = (src_px >= 0) & (src_px < W) & (src_py >= 0) & (src_py < H)
-    obs = np.zeros_like(source)
-    obs[ys[valid], xs[valid]] = source[src_py[valid], src_px[valid]]
-
-    # 노이즈 추가
-    obs += rng.normal(0, 0.02, size=obs.shape).astype(np.float32)
-    return obs.astype(np.float32)
-
-
 def create_mock_h5(
     out_path: Union[str, Path],
     n_systems: int = 1024,
-    image_size: int = 128,
     max_epochs: int = 300,
     mode2_max_dm_dim: int = 4,
-    pixel_scale: float = 0.05,
     seed: int = 42,
 ) -> Path:
     """
@@ -72,10 +31,8 @@ def create_mock_h5(
     ----------
     out_path      : 저장 경로 (호출자 제공, 하드코딩 금지)
     n_systems     : 샘플 수
-    image_size    : 이미지 H=W
     max_epochs    : 광도곡선 최대 길이
     mode2_max_dm_dim : DM 파라미터 패딩 차원
-    pixel_scale   : [arcsec/pix]
     seed          : 난수 시드
 
     Returns
@@ -85,7 +42,6 @@ def create_mock_h5(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    H = W = image_size
 
     with h5py.File(out_path, "w") as f:
         # ---- metadata ----
@@ -145,31 +101,6 @@ def create_mock_h5(
         lc_g.create_dataset("t_obs",       data=t_obs_arr)
         lc_g.create_dataset("n_epochs",    data=n_epochs_arr.astype(np.int32))
 
-        # ---- images ----
-        I_obs_arr  = np.zeros((n_systems, H, W), dtype=np.float32)
-        S_true_arr = np.zeros((n_systems, H, W), dtype=np.float32)
-        psf_arr    = np.zeros((n_systems, 11, 11), dtype=np.float32)
-        pscale_arr = np.full(n_systems, pixel_scale, dtype=np.float32)
-
-        # 가우시안 PSF
-        yp, xp = np.mgrid[-5:6, -5:6]
-        psf_base = np.exp(-(xp**2 + yp**2) / (2 * 1.5**2)).astype(np.float32)
-        psf_base /= psf_base.sum()
-
-        for i in range(n_systems):
-            theta_E = float(sigma_v_arr[i] / 300.0 * 1.0)  # 간단 스케일
-            src = _gaussian_source(H, W, rng)
-            obs = _sis_lens_image(src, pixel_scale, theta_E, rng)
-            I_obs_arr[i]  = obs
-            S_true_arr[i] = src
-            psf_arr[i]    = psf_base
-
-        img_g = f.create_group("images")
-        img_g.create_dataset("I_obs",       data=I_obs_arr)
-        img_g.create_dataset("S_true",      data=S_true_arr)
-        img_g.create_dataset("psf",         data=psf_arr)
-        img_g.create_dataset("pixel_scale", data=pscale_arr)
-
         # ---- true_values ----
         # Mode 1 라벨: H0_true = H0 + 작은 노이즈
         H0_true = H0_arr + rng.normal(0, 0.5, n_systems).astype(np.float32)
@@ -205,13 +136,11 @@ def create_mock_h5(
         m1_err = rng.normal(0, 1.0, n_systems).astype(np.float32)
         m2_err = np.zeros((n_systems, mode2_max_dm_dim), dtype=np.float32)
         m2_err[:, 0] = rng.normal(0, 5.0, n_systems).astype(np.float32)
-        m3_err = rng.normal(0, 0.05, (n_systems, H, W)).astype(np.float32)
         al_used = np.ones(n_systems, dtype=np.int32)
 
         se_g = f.create_group("simplification_errors")
         se_g.create_dataset("mode1_H0_error",        data=m1_err)
         se_g.create_dataset("mode2_dm_error",        data=m2_err)
-        se_g.create_dataset("mode3_source_residual", data=m3_err)
         se_g.create_dataset("approx_level_used",     data=al_used)
 
     return out_path

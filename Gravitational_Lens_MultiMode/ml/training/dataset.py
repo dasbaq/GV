@@ -4,6 +4,9 @@ LensCorrectionDataset — HDF5 스트리밍 + Mode별 라벨 분기.
 한 샘플 = (system_id, approx_level, target_mode) triple.
 target_mode에 따라 사용하는 입력 모달리티와 라벨이 달라짐.
 
+입력 모달리티: LC + Param + Σ-curve (3-way 고정).
+Mode 3(Source 복원)과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
+
 HDF5 접근: swmr=True, worker별 file handle 재오픈.
 Split: system 단위 80/10/10, seed 고정.
 """
@@ -68,6 +71,16 @@ def _compute_sigma_curve_fallback(F_joint: np.ndarray, n_valid: int,
     return sigma.astype(np.float32)
 
 
+def _scalar_at(h5: h5py.File, path: str, idx: int, default: float = 0.0) -> float:
+    if path not in h5:
+        return float(default)
+    try:
+        value = float(np.asarray(h5[path][idx]).reshape(-1)[0])
+    except Exception:
+        return float(default)
+    return value if np.isfinite(value) else float(default)
+
+
 class _FileHandleCache(threading.local):
     """worker별 HDF5 file handle 캐시 (threading.local)."""
 
@@ -89,11 +102,10 @@ class LensCorrectionDataset(Dataset):
     ----------
     h5_paths         : HDF5 파일 경로 목록
     split            : "train" | "val" | "test"
-    modes            : 사용할 Mode 목록 (1, 2, 3)
+    modes            : 사용할 Mode 목록 (1, 2)
     approx_levels    : 사용할 근사 레벨 목록 (1, 2)
     max_len          : 광도곡선 패딩 길이
     sigma_curve_size : Σ 곡선 길이
-    image_size       : 이미지 H=W
     mode2_max_dm_dim : Mode 2 라벨 패딩 차원
     param_norm       : {key: {min, max}} 정규화 설정
     target_scaler    : train split에서 fit한 Mode별 target standardization 설정
@@ -104,11 +116,10 @@ class LensCorrectionDataset(Dataset):
         self,
         h5_paths: List[Path],
         split: str,
-        modes: Tuple[int, ...] = (1, 2, 3),
+        modes: Tuple[int, ...] = (1, 2),
         approx_levels: Tuple[int, ...] = (1, 2),
         max_len: int = 1024,
         sigma_curve_size: int = 512,
-        image_size: int = 128,
         mode2_max_dm_dim: int = 4,
         param_norm: Optional[dict] = None,
         target_scaler: Optional[dict] = None,
@@ -122,7 +133,6 @@ class LensCorrectionDataset(Dataset):
         self.approx_levels = list(approx_levels)
         self.max_len = max_len
         self.sigma_curve_size = sigma_curve_size
-        self.image_size = image_size
         self.mode2_max_dm_dim = mode2_max_dm_dim
         self.param_norm = param_norm or {}
         self.target_scaler = target_scaler or {}
@@ -209,26 +219,6 @@ class LensCorrectionDataset(Dataset):
                 F_raw, n_valid, self.sigma_curve_size
             )
 
-        # --- 이미지 (Mode 3 활성 시) ---
-        use_image = bool(int(target_mode) in (1, 3))
-        if use_image:
-            img_raw = np.array(f["images/I_obs"][sys_idx], dtype=np.float32)  # [H, W]
-            approx_raw = np.array(f["approx_outputs/S_approx"][sys_idx], dtype=np.float32)
-            # 리사이즈 (image_size x image_size)
-            if img_raw.shape[0] != self.image_size:
-                from skimage.transform import resize
-                img_raw = resize(
-                    img_raw, (self.image_size, self.image_size),
-                    anti_aliasing=True, preserve_range=True
-                ).astype(np.float32)
-                approx_raw = resize(
-                    approx_raw, (self.image_size, self.image_size),
-                    anti_aliasing=True, preserve_range=True
-                ).astype(np.float32)
-            image = np.stack([img_raw, img_raw - approx_raw], axis=0)  # [2, H, W]
-        else:
-            image = np.zeros((2, self.image_size, self.image_size), dtype=np.float32)
-
         # --- 라벨 ---
         target = np.zeros(self.mode2_max_dm_dim + 2, dtype=np.float32)  # 최대 dim 맞춤
         target_dim = 1
@@ -250,24 +240,6 @@ class LensCorrectionDataset(Dataset):
             target[:dm_dim] = dm_err_full[:dm_dim]
             target_dim = dm_dim
 
-        elif target_mode == 3:
-            # Mode 3 라벨은 target_image에 별도 저장
-            target_dim = 0
-
-        # target_image (Mode 3)
-        if target_mode == 3:
-            raw_res = np.array(f["simplification_errors/mode3_source_residual"][sys_idx],
-                               dtype=np.float32)
-            if raw_res.shape[0] != self.image_size:
-                from skimage.transform import resize
-                raw_res = resize(
-                    raw_res, (self.image_size, self.image_size),
-                    anti_aliasing=True, preserve_range=True
-                ).astype(np.float32)
-            target_image = raw_res
-        else:
-            target_image = np.zeros((self.image_size, self.image_size), dtype=np.float32)
-
         if self.target_scaler:
             if target_mode == 1 and "mode1" in self.target_scaler:
                 s = self.target_scaler["mode1"]
@@ -277,22 +249,57 @@ class LensCorrectionDataset(Dataset):
                 mean = np.asarray(s["mean"], dtype=np.float32)
                 scale = np.asarray(s["scale"], dtype=np.float32)
                 target[:target_dim] = (target[:target_dim] - mean[:target_dim]) / scale[:target_dim]
-            elif target_mode == 3 and "mode3" in self.target_scaler:
-                s = self.target_scaler["mode3"]
-                target_image = ((target_image - float(s["mean"])) / float(s["scale"])).astype(np.float32)
+
+        mode1_scaler = self.target_scaler.get("mode1", {})
+        mode2_scaler = self.target_scaler.get("mode2", {})
+        mode2_mean = np.asarray(mode2_scaler.get("mean", np.zeros(self.mode2_max_dm_dim)), dtype=np.float32)
+        mode2_scale = np.asarray(mode2_scaler.get("scale", np.ones(self.mode2_max_dm_dim)), dtype=np.float32)
+        if mode2_mean.size < self.mode2_max_dm_dim:
+            mode2_mean = np.pad(mode2_mean, (0, self.mode2_max_dm_dim - mode2_mean.size))
+        if mode2_scale.size < self.mode2_max_dm_dim:
+            mode2_scale = np.pad(mode2_scale, (0, self.mode2_max_dm_dim - mode2_scale.size), constant_values=1.0)
+
+        mode2_raw = np.array(
+            f["simplification_errors/mode2_dm_error"][sys_idx]
+            if "simplification_errors/mode2_dm_error" in f
+            else np.zeros(self.mode2_max_dm_dim, dtype=np.float32),
+            dtype=np.float32,
+        )
+        mode2_label_available = bool(np.any(np.abs(mode2_raw) > 1.0e-8))
+        dm_approx = (
+            np.array(f["approx_outputs/dm_params_approx"][sys_idx], dtype=np.float32)
+            if "approx_outputs/dm_params_approx" in f
+            else np.zeros(self.mode2_max_dm_dim, dtype=np.float32)
+        )
+        theta_e_approx = float(dm_approx[0]) if dm_approx.size else 0.0
+        if theta_e_approx <= 0.0:
+            theta_e_approx = _scalar_at(f, "params/theta_E", sys_idx, _scalar_at(f, "true_values/theta_E", sys_idx, 0.0))
+        dphi_sie = _scalar_at(
+            f,
+            "ray_paths/fermat_potential_approx",
+            sys_idx,
+            _scalar_at(f, "ray_paths/fermat_potential", sys_idx, 0.0),
+        )
 
         return {
             "lc":           torch.from_numpy(lc),
             "lc_mask":      lc_mask,
             "params":       torch.from_numpy(params_vec),
             "sigma_curve":  torch.from_numpy(sigma_curve[np.newaxis]),   # [1, S]
-            "image":        torch.from_numpy(image),
-            "use_image":    use_image,
             "target":       torch.from_numpy(target),
             "target_dim":   target_dim,
             "target_mode":  target_mode,
-            "target_image": torch.from_numpy(target_image),
             "approx_level": approx_level,
+            "system_index":  sys_idx,
+            "h0_approx":     torch.tensor(float(raw_params["H0_approx"]), dtype=torch.float32),
+            "dt_lc":         torch.tensor(float(raw_params["dt_lc"]), dtype=torch.float32),
+            "theta_E_approx": torch.tensor(theta_e_approx, dtype=torch.float32),
+            "dphi_sie_rad2": torch.tensor(float(dphi_sie), dtype=torch.float32),
+            "mode1_target_mean": torch.tensor(float(mode1_scaler.get("mean", 0.0)), dtype=torch.float32),
+            "mode1_target_scale": torch.tensor(float(mode1_scaler.get("scale", 1.0)), dtype=torch.float32),
+            "mode2_target_mean": torch.from_numpy(mode2_mean[:self.mode2_max_dm_dim].astype(np.float32)),
+            "mode2_target_scale": torch.from_numpy(mode2_scale[:self.mode2_max_dm_dim].astype(np.float32)),
+            "mode2_label_available": torch.tensor(mode2_label_available, dtype=torch.bool),
         }
 
 
@@ -309,11 +316,11 @@ def build_weighted_sampler(
     Parameters
     ----------
     dataset      : LensCorrectionDataset
-    mode_weights : [w1, w2, w3]  (None이면 균등)
+    mode_weights : [w1, w2]  (None이면 균등)
     """
     if mode_weights is None:
-        mode_weights = [1.0, 1.0, 1.0]
-    w_map = {1: mode_weights[0], 2: mode_weights[1], 3: mode_weights[2]}
+        mode_weights = [1.0, 1.0]
+    w_map = {1: mode_weights[0], 2: mode_weights[1]}
     weights = torch.tensor(
         [w_map[entry[3]] for entry in dataset._index], dtype=torch.float
     )

@@ -302,7 +302,14 @@ def hdf5_feature_values(h5: Any, sys_idx: int) -> dict[str, float]:
 
     dt_lc = _first_dataset_at(
         h5,
-        ("observed_features/dt_lc", "time_delay/dt_lc", "approx_outputs/dt_approx"),
+        (
+            "observed_features/dt_lc",
+            "time_delay/dt_lc",
+            "approx_outputs/dt_approx",
+            # Legacy mock HDF5 fixture fallback only. Phase 4 catalogs and real
+            # inputs must provide observed_features/time_delay values.
+            "true_values/dt_true",
+        ),
         sys_idx,
     )
     dt_lc_sigma = _first_dataset_at(

@@ -40,7 +40,8 @@ def test_load_yaml_catalog_and_build_mode1_features() -> None:
     )
     assert got["params"].shape[-1] == len(_param_norm()) + 5
     assert got["lc"].shape[1] == 2
-    assert bool(got["use_image"][0]) is False
+    # use_image deleted in v0.5 — key must not be present
+    assert "use_image" not in got, "use_image was deleted in v0.5"
     assert spec["pair_order"] == {"leading_image": "A", "trailing_image": "B"}
 
 

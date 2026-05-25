@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
 
-마지막 업데이트: 2026-05-24
+마지막 업데이트: 2026-05-25 (v0.5 Image/Mode3 삭제)
 
 ---
 
@@ -22,8 +22,8 @@
 | Mode | 역할 | 입력 → 출력 | 구현 상태 |
 |------|------|-------------|-----------|
 | Mode 1 | 허블 상수 역산 | (Δt, 렌즈 모델) → H₀ | ✅ 관측→H₀ E2E 구현 (ML 보정 off 기본) |
-| Mode 2 | 암흑물질 분포 역산 | (Δt, θ_i, μ_i, H₀) → DM 파라미터 | ⬜ 미구현 |
-| Mode 3 | Source 이미지 복원 | I_obs(x,y) → S(x,y) | ✅ 구현 완료 (별도 모듈) |
+| Mode 2 | 암흑물질 분포 역산 | (Δt, θ_i, H₀) → DM 파라미터 | ✅ SIE θ+Δt μ-free E2E 구현 |
+| Mode 3 | Source 이미지 복원 | I_obs(x,y) → S(x,y) | 🗑️ 삭제됨 (v0.5, DECISIONS.md [2026-05-25]) |
 
 자세한 정식은 ARCHITECTURE.md §"Mode별 역산 정식" 참조.
 
@@ -39,7 +39,6 @@ ARCHITECTURE.md §"표준 근사 모델" 참조. 프로젝트 전체에서 단 �
 Substructure:    평활 (smoothed out)
 렌즈 평면:        단일 평면
 속도 분산:        등방 (isotropic)
-광원 (Mode 3):    extended (Sérsic 또는 pixelated)
 ```
 
 ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
@@ -85,7 +84,7 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 
 ## Phase 5 — Mode별 역산 + 멀티모달 ML 오차 보정
 
-### 5-A. 역산 솔버 (Mode 1/2 신규, Mode 3 wrapper)
+### 5-A. 역산 솔버 (Mode 1/2)
 
 ```
 [x] inversion/observation_io.py     — 관측 입력 어댑터 추가
@@ -96,8 +95,9 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ + ML 보정(--apply-correction) JSON CLI
 [x] inversion/real_catalog.py       — 실관측 YAML(Gaia GraL X + 외부 Bag+22 결과) → Mode 1 feature spec
                                       (|Δt| 저장, 음수 입력 pair flip 로그, Mode 2 예약필드 보존)
-[ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
-[ ] inversion/mode3_wrapper.py     — 기존 Mode 3 솔버 호출 wrapper (코드 수정 금지)
+[x] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE θ+Δt, μ-free 기본)
+[x] pipelines/run_mode2.py          — Phase 4 HDF5 θ_i+dt_lc → Mode 2 DM JSON + MOCK truth eval
+[🗑️] inversion/mode3_wrapper.py    — 삭제됨 (v0.5, DECISIONS.md [2026-05-25])
 ```
 
 ### 5-B. ML 오차 보정 (멀티모달)
@@ -105,14 +105,16 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 ```
 [x] ml/training/feature_schema.py  — ParamEncoder 공통 feature schema, 누락 mask, 품질 지표
                                     (config-driven sigma_dt sampler/quality normalization)
-[x] ml/training/dataset.py         — HDF5 스트리밍, Mode별 라벨 분기 + observed_features 입력
-[ ] ml/models/encoders.py          — 4종 인코더 (LC / Param / Σ-2D / Image)
-[ ] ml/models/fusion.py            — Cross-attention
-[ ] ml/models/heads.py             — Mode 1 / 2 / 3 분기 헤드
-[ ] ml/models/error_corrector.py   — 조립체 (target_mode 라우팅)
-[ ] ml/training/losses.py          — Mode별 task loss + physics + calibration
-[ ] ml/training/trainer.py         — multi-task 훈련 루프
-[ ] pipelines/train_corrector.py   — CLI 엔트리포인트
+[x] ml/training/dataset.py         — HDF5 스트리밍, Mode 1/2 라벨 분기 + observed_features 입력
+                                    (v0.5: image/use_image/target_image 삭제됨)
+[x] ml/models/encoders.py          — 3종 인코더 (LC / Param / Σ-curve) — Image 인코더 삭제됨 (v0.5)
+[x] ml/models/fusion.py            — 3-way Cross-attention 고정 (LC + Param + Σ)
+[x] ml/models/heads.py             — Mode 1 / 2 분기 헤드 — Mode 3 헤드 삭제됨 (v0.5)
+[x] ml/models/error_corrector.py   — 조립체 (target_mode 라우팅, Mode 1/2 only)
+                                    (v0.5: Mode1Head in_dim d_model×3→d_model×2, image 입력 삭제)
+[x] ml/training/losses.py          — Mode 1/2 task loss + physics + calibration — ssim/mode3 삭제됨 (v0.5)
+[x] ml/training/trainer.py         — multi-task 훈련 루프
+[x] pipelines/train_corrector.py   — CLI 엔트리포인트
 ```
 
 ### Mock 데이터 브리지
@@ -132,10 +134,13 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 | ZTF 노이즈 전체 통계 | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | SDSS J1226-0006 | Mode 1 출력 (H₀) | ⬜ 미실행 | — |
 | Phase 4 v0.4 selection-bias | Mode 1 ML 보정 | ✅ 통과 — ratio 0.83(leak false), unfiltered RMSE 4.81(no-corr 33.25), r 0.59, coverage 0.695 | 2026-05-22 |
+| Phase 4 v0.4 재현 (⚠️ 13-dim) | Mode 1 ML 보정 | ✅ 통과 — ratio 0.74(leak false), unfiltered RMSE 4.55 r 0.62, filtered RMSE 6.18 r 0.39, coverage 0.68. **Kaggle Dataset가 구 13-dim이라 20-dim 재학습 아님** | 2026-05-24 |
+| **Phase 4 v0.4 20-dim 정식** | Mode 1 ML 보정 | ✅ **통과** — ratio 0.996(leak false), unfiltered RMSE 4.51 r 0.66 coverage 0.655, filtered RMSE 4.53 r 0.62 coverage 0.80, pos_frac 1.0, NaN 0. observed_features(20-dim) 데이터로 학습. `all_pass_excluding_record_only=false`는 equivalence 생략으로 인한 CUDA forward diff=Inf 한 행 때문 | 2026-05-25 |
+| **Phase 4 v0.4 achievable-r ceiling** | Mode 1 ML 보정 | ✅ **완료** — inputs-conditioned ExtraTrees oracle. unfiltered oracle H0 r 0.8096(CI [0.7324,0.8786]), model/ceiling 0.810. filtered oracle H0 r 0.2495(CI [-0.0770,0.5319]) → `filtered_h0_r_min=0.19`로 record_only 해제 | 2026-05-25 |
 | TDC1 Rung 0 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | TDC1 Rung 1 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
-| (추가 예정) DM 회복 정확도 | Mode 2 | ⬜ 미실행 | — |
-| (추가 예정) Source 재구성 PSNR/SSIM | Mode 3 | ⬜ 미실행 | — |
+| DM 회복 정확도 | Mode 2 | ⚠️ MOCK — synthetic SIE quad 회복 테스트 통과, Phase4 v0.4 full-truth subset(n=25) 평가는 SIE-only 한계로 bias 기록(theta_E median rel 0.527, q 0.194, sigma_v 0.236). μ leak 없음 | 2026-05-25 |
+| Source 재구성 PSNR/SSIM | Mode 3 | 🗑️ 삭제됨 (v0.5) | — |
 
 ---
 
@@ -191,6 +196,16 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   forward/backward smoke는 통과.
 - Phase 4 v0은 50-system small catalog였고 truth Fermat을 SIE image 위치에서 평가하는
   artifact가 확인되어 baseline 비교용으로만 보존한다.
+- Phase 5 physics loss는 Mode 1/2 한정 D_Δt 일관성 패널티로 교체됐다. v0.4
+  `correction_targets/mode2_dm_correction`은 전부 zero placeholder라 Mode 2 physics
+  row는 mask되어 0으로 degrade된다. Mode 2 실학습은 nonzero target catalog 선행 필요.
+- v0.5에서 Mode 3(Source 이미지 복원)과 Image 입력 모달리티가 삭제됐다.
+  Mode1Head in_dim이 d_model×3(384)→d_model×2(256)으로 변경되어 v0.4 checkpoint
+  (`head1.net.0.weight` shape 384×…)는 v0.5 모델과 **호환 불가**이다.
+  Kaggle CUDA에서 v0.5 기반 재학습이 필요하다 (다음 작업 참조).
+  데이터 생성 코드(`error_catalog.py`, `data_adapters`)는 기존 HDF5의
+  `images/` 그룹과 `simplification_errors/mode3_source_residual`을 여전히 저장하지만,
+  학습 코드는 이를 읽지 않는다(후방 호환 스키마).
 - Phase 4 v0.1은 truth lens 아래 `theta - alpha_truth(theta) - beta = 0` root-find로
   truth image 위치를 다시 풀고 validity filter + reject/resample을 적용한 500-system catalog다.
   `mode1_H0_correction` std `6.273`, min/max `3.198/34.747`, cross term `-4.040`,
@@ -341,17 +356,44 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   full train을 같은 세션에서 실행해야 한다. Kaggle staging 파일 복사는 완료됐고 `kaggle`
   CLI도 설치했으나 인증이 없어(`kaggle auth login` 또는 `~/.kaggle/kaggle.json` 필요)
   Dataset version 업로드는 미완료.
+- 2026-05-24 Kaggle CUDA full run은 위 업로드 미완료 때문에 **Kaggle에 남아있던 구 13-dim
+  `phase4_v0_4.h5`로 학습됐다**(`param_encoder_input_dim_changed: false`, par_enc `(256,13)`).
+  결과는 13-dim v0.4 재현이며 통과(ratio 0.74 leak false, unfiltered RMSE 4.55/r 0.62,
+  filtered 6.18/r 0.39, coverage 0.68, CPU↔CUDA diff 4.47e-08, NaN 0, best ep10/stop ep18).
+  selection bias·NaN 재발 없음. **20-dim observed_features 정식 재학습은 미수행** —
+  로컬 20-dim 카탈로그를 Kaggle Dataset에 재업로드한 뒤 재실행해야 한다.
+- 2026-05-25 위 미수행 항목 **완료**. 로컬 20-dim 카탈로그(`phase4_v0_4.h5`/eval/scaler/floor)를
+  Kaggle Dataset `donghyun51/lens-phase4-v0-4` 새 버전으로 업로드(인증 ACCESS_TOKEN)하고,
+  Kaggle CUDA에서 **`--phase train`(equivalence 의도적 생략) `--workers 0 --epochs 50 --bootstrap-n 1000`**
+  로 재학습했다. 데이터 경로 `lens-phase4-v0-4/phase4_v0_4.h5`(20-dim observed_features 포함)로
+  학습됨을 확인. 결과: 27ep early-stop(best ep19), NaN 0, filtered RMSE 4.53(CI [3.30,5.75])/r 0.62/
+  coverage 0.80, unfiltered RMSE 4.51(CI [4.02,4.99])/r 0.66/coverage 0.655, ratio 0.996(<=2.5),
+  pos_frac 1.0/1.0, **leak_triggered false**. 13-dim 재현(unfiltered r 0.62)보다 r 소폭 개선,
+  selection bias·NaN 재발 없음. `all_pass_excluding_record_only=false`는 equivalence 생략으로
+  CUDA forward diff가 `Inf`(미산출)인 한 행 때문이며 성능/bias/calibration 행은 전부 pass다.
+  CPU↔CUDA 동등성은 이전 라운드(5-24, diff 4.47e-08)에서 입증됐고 이번엔 입력 차원만 13→20이라
+  검증을 생략했다. **주의**: `param_encoder_input_dim_changed`는 config↔predeclared(둘 다 20) 비교라
+  데이터 13/20-dim을 구분하지 못한다. 20-dim 진위 증거는 데이터 경로(새 dataset)와 checkpoint
+  `par_enc.net.0.weight=(256,20)`다(checkpoint 회수 후 최종 확인 예정).
+- v0.4 관련 코드(round 스크립트/feature_schema/real_catalog/config)는 PR #1로 `origin/main`에 머지됨.
+  Kaggle 노트북은 main을 clone하면 v0.4 스크립트가 존재한다(과거 clone 실패는 머지 전 시점 때문).
 
 ---
 
 ## 다음 작업
 
-1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. Phase 4 v0.4 20-dim 재학습: Kaggle Dataset version 업로드 후 CUDA에서
-   `scripts/phase4_v0_4_round.py --phase all --device cuda --workers 0 --epochs 50 --bootstrap-n 1000`
-   실행. 산출물(checkpoint/eval/history/infra JSON)을 repo로 회수해 BENCHMARKS에 고정.
-3. 무편향 분포의 achievable-r ceiling을 inputs-conditioned oracle로 산정해 v0.4 r 기준을 확정한다
-   (현재 record_only). 절대 r 향상은 별도 축: 더 큰 카탈로그(n↑) 또는 입력 피처 보강 검토.
+1. **v0.5 Kaggle CUDA 재학습** — Mode1Head in_dim 변경(d_model×3→d_model×2)으로 v0.4 checkpoint 비호환.
+   `phase4_v0_4_round.py`(v0.5 코드 기반)로 동일 데이터(`phase4_v0_4.h5` 20-dim)를 재학습.
+   목표: unfiltered r ≥ 0.60, RMSE ≤ 5.5, coverage CI overlap `[0.62, 0.78]`.
+   Image zero-out ablation 커맨드는 DECISIONS.md [2026-05-25] 참조.
+2. [x] **완료(2026-05-25)** — 20-dim 산출물 회수 완료
+   (`checkpoints/phase4_v0_4_imgres_best.pt`, `logs/phase4_v0_4_imgres_h0_eval{,_unfiltered}.json`,
+   `..._infra_equivalence.json`). checkpoint `par_enc.net.0.weight=(256,20)` 확인 완료, BENCHMARKS에 고정.
+   13-dim 재현본은 `phase4_v0_4_imgres_best_13dim_20260522.pt`로 분리 보존.
+2. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
+3. [x] **완료(2026-05-25)** — 무편향 분포의 achievable-r ceiling을 inputs-conditioned oracle로 산정.
+   unfiltered oracle H0 r `0.8096`, model/ceiling `0.810`; `filtered_h0_r_min=0.19`로 record_only 해제.
+   절대 r 향상은 별도 축: 더 큰 카탈로그(n↑) 또는 입력 피처 보강 검토.
 4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 5. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
 6. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결

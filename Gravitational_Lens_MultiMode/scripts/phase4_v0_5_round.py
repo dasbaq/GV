@@ -1,8 +1,21 @@
-"""Phase 4 v0.4 infrastructure equivalence, retrain, and bootstrap eval.
+"""Phase 4 v0.5 재학습 라운드.
 
-This script keeps the v2.6 model, inputs, loss, optimizer, batch size, and AMP
-policy fixed.  Phase 4 labels use the HDF5 schema sign convention
-``correction = true - approx``, so corrected H0 is ``H0_approx + correction``.
+v0.4와 동일한 데이터(phase4_v0_4.h5, 20-dim observed_features)를 사용하되,
+v0.5 모델 구조(Mode 3 / Image 모달리티 삭제)로 재학습한다.
+
+v0.4 → v0.5 변경 요약:
+  - Mode1Head in_dim: d_model×3=384 → d_model×2=256
+    (cat([fused, h_lc, h_img]) → cat([fused_sub, h_lc[mask]]))
+  - ImageEncoder, Mode3Head 삭제
+  - fusion: 4-way 분기 → 3-way 고정 (LC + Param + Σ-curve)
+  - composite_loss: mode3_task, ssim 항목 삭제
+  - dataset: image / use_image / target_image 키 삭제
+
+데이터·스케일러·승인 기준은 v0.4와 동일하게 유지한다.
+Kaggle Dataset: donghyun51/lens-phase4-v0-4 (재업로드 불필요)
+
+SIE 표준 근사 가정: 모든 역산은 SIE 단일 고정 근사 위에서 동작한다.
+Units: H0 and corrections [km/s/Mpc].
 """
 
 from __future__ import annotations
@@ -49,19 +62,20 @@ from scripts.lib.round_common import (
     skipped_acceptance,
 )
 
+# v0.5는 v0.4와 동일한 데이터를 사용한다 (재업로드 불필요)
 DATA_NAME = "phase4_v0_4.h5"
 UNFILTERED_DATA_NAME = "phase4_v0_4_eval_unfiltered.h5"
 PATHS = build_round_paths(
     root=ROOT,
     data_name=DATA_NAME,
-    round_name="phase4_v0_4_round",
-    checkpoint_name="phase4_v0_4_imgres_best.pt",
-    history_name="phase4_v0_4_imgres_long_history.json",
-    eval_name="phase4_v0_4_imgres_h0_eval.json",
-    infra_name="phase4_v0_4_infra_equivalence.json",
-    scaler_name="target_scaler_phase4_v0_4.pkl",
+    round_name="phase4_v0_5_round",
+    checkpoint_name="phase4_v0_5_imgres_best.pt",
+    history_name="phase4_v0_5_imgres_long_history.json",
+    eval_name="phase4_v0_5_imgres_h0_eval.json",
+    infra_name="phase4_v0_5_infra_equivalence.json",
+    scaler_name="target_scaler_phase4_v0_4.pkl",   # 스케일러는 v0.4와 공유
     unfiltered_name=UNFILTERED_DATA_NAME,
-    eval_unfiltered_name="phase4_v0_4_imgres_h0_eval_unfiltered.json",
+    eval_unfiltered_name="phase4_v0_5_imgres_h0_eval_unfiltered.json",
 )
 DATA = PATHS.data
 UNFILTERED_DATA = PATHS.unfiltered
@@ -72,15 +86,11 @@ EVAL = PATHS.eval
 EVAL_UNFILTERED = PATHS.eval_unfiltered
 INFRA = PATHS.infra
 RUNS = PATHS.runs
-EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_4_equivalence.json"
+EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_5_equivalence.json"
 
-# v0.4 재교정: v0.2-유래 absolute band(2.755/4.862/6.57/r>=0.85)는 truncated easy-subset에서
-# 나온 값이라 무편향 전체 분포에 무효. RMSE band는 [leak floor, no_correction]로 재산정한다.
-# no_correction RMSE(filtered val n=50)=29.63 → upper = no_corr/2.67≈11.08, point upper = no_corr/2≈16.62.
-# H0 r 기준은 inputs-conditioned oracle H0-space ceiling의 80%로 고정한다.
-# filtered oracle H0 r=0.2494766 → floor_to_2_decimals(0.80*r)=0.19.
+# 승인 기준: v0.4와 동일 (데이터 분포가 같으므로 기준 유지)
 # 근거: data/logs/phase4_v0_4_floor_analysis.json,
-# data/logs/phase4_v0_4_r_ceiling.json, DECISIONS.md [2026-05-25] v0.4 r ceiling.
+#       data/logs/phase4_v0_4_r_ceiling.json, DECISIONS.md [2026-05-25].
 ACCEPTANCE = {
     "cuda_forward_diff_max": 1.0e-4,
     "filtered_rmse_ci_lower_min": 0.5,
@@ -222,6 +232,7 @@ def move_batch(batch: dict, device: torch.device) -> dict:
 
 
 def run_forward(model: torch.nn.Module, batch: dict, device: torch.device) -> dict[str, np.ndarray]:
+    """v0.5: image/use_image 인자 없음."""
     model.eval().to(device)
     batch = move_batch(batch, device)
     with torch.no_grad():
@@ -274,6 +285,7 @@ def train_one(cfg: dict, seed: int, device_name: str, workers: int,
     set_seed(seed)
     device = select_device(device_name)
     model = build_model(cfg).to(device)
+    # v0.5: Mode 3 삭제됨 → modes=[1, 2]
     train_loader = build_loader(cfg, "train", [1, 2], [1, 2], scaler, seed, workers, device, True)
     val_loader = build_loader(cfg, "val", [1, 2], [1, 2], scaler, seed, workers, device, False)
     opt = torch.optim.AdamW(
@@ -502,6 +514,7 @@ def load_floor_analysis() -> dict | None:
     with path.open() as f:
         return json.load(f)
 
+
 def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
                            device_name: str, workers: int, path: Path,
                            ids: np.ndarray, output_path: Path,
@@ -569,6 +582,8 @@ def environment_sanity(device: torch.device) -> dict:
         "cuda_device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
         "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "nvidia_smi": None,
+        "model_version": "v0.5",
+        "mode1_head_in_dim": 256,   # d_model×2 (v0.5); v0.4는 384(d_model×3)
     }
     try:
         proc = subprocess.run(
@@ -590,12 +605,12 @@ def environment_sanity(device: torch.device) -> dict:
 
 def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candidate: int) -> dict:
     RUNS.mkdir(parents=True, exist_ok=True)
-    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_4_temp.pkl", cfg["seed"])
+    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_5_temp.pkl", cfg["seed"])
     fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
     dist_workers = worker_candidate if target_device.type == "cuda" else 0
     dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
     result = {
-        "round": "phase4_v0_4",
+        "round": "phase4_v0_5",
         "phase": "equivalence",
         "device": environment_sanity(target_device),
         "forward_only": fwd,
@@ -625,7 +640,7 @@ def acceptance_report(filtered: dict, unfiltered: dict, infra: dict,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Phase 4 v0.5 round (v0.5 model, same data as v0.4)")
     add_phase_args(parser)
     parser.add_argument("--bootstrap-n", type=int, default=1000)
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
@@ -634,9 +649,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=None,
                         help="Full retrain/eval workers override. CUDA default is 4.")
     parser.add_argument("--worker-candidate", type=int, default=None,
-                        help="Accelerator worker count for distribution equivalence. Default follows device.")
+                        help="Accelerator worker count for distribution equivalence.")
     parser.add_argument("--epochs", type=int, default=None,
-                        help="Full retrain epoch override; default keeps v2.6 value 50.")
+                        help="Full retrain epoch override; default 50.")
     args = parser.parse_args()
     cfg = load_cfg(args.epochs)
     target_device = select_device(args.device)
@@ -659,6 +674,7 @@ def main() -> None:
 
     infra = {
         "environment_sanity": environment_sanity(target_device),
+        "model_version": "v0.5",
         "data": display_path(DATA),
         "unfiltered_eval_data": display_path(unfiltered_path),
         "equivalence_handoff": load_equivalence_payload(args.equivalence_from),
@@ -666,6 +682,13 @@ def main() -> None:
         "acceptance_predeclared": ACCEPTANCE,
         "leak_triggers_predeclared": LEAK_TRIGGERS,
         "mode2_correction_availability": mode2_correction_availability(DATA),
+        "v0_5_changes": {
+            "mode1_head_in_dim": "256 (d_model×2, was 384 d_model×3 in v0.4)",
+            "image_modality": "deleted",
+            "mode3_head": "deleted",
+            "fusion": "3-way fixed (LC+Param+Sigma)",
+            "loss": "mode3_task and ssim deleted",
+        },
     }
     if infra["param_encoder_input_dim"] != LEAK_TRIGGERS["param_encoder_input_dim"]:
         with open(INFRA, "w") as f:
@@ -673,7 +696,7 @@ def main() -> None:
         raise SystemExit("ParamEncoder input dim changed; leak trigger fired.")
 
     if args.phase == "all":
-        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_4_temp.pkl", cfg["seed"])
+        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_5_temp.pkl", cfg["seed"])
         fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
         infra["forward_only"] = fwd
         if not fwd["passed"]:
@@ -703,6 +726,8 @@ def main() -> None:
         patience=cfg["training"]["early_stop_patience"],
     )
     training_summary = {
+        "round": "phase4_v0_5",
+        "model_version": "v0.5",
         "criterion": "val.mode1_task",
         "ended_epoch": full["ended_epoch"],
         "early_stop_epoch": full["ended_epoch"] if full["ended_epoch"] < cfg["training"]["epochs"] else None,
@@ -745,6 +770,7 @@ def main() -> None:
         print(json.dumps({"infra": infra, "training": training_summary, "acceptance": report}, indent=2))
         raise SystemExit("Leak trigger fired; stopping before any tuning.")
     print(json.dumps({
+        "round": "phase4_v0_5",
         "infra": display_path(INFRA),
         "training": training_summary,
         "filtered_eval": display_path(EVAL),

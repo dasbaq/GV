@@ -3,6 +3,99 @@
 
 ---
 
+## [2026-05-25] — v0.5 Mode 3(Source 복원) + Image 입력 모달리티 삭제
+
+### 삭제
+- `ml/models/heads.py`: `Mode3Head`, `_UpBlock` 삭제. `Mode1Head`, `Mode2Head`만 유지.
+- `ml/models/encoders.py`: `ImageEncoder`, `_Conv2DBlock` 삭제. 3종 인코더(LC/Param/Σ-curve)만 유지.
+- `ml/models/fusion.py`: 4-way 분기 제거, 3-way Cross-attention 고정(`h_lc, h_params, h_sigma`).
+- `ml/models/error_corrector.py`: `img_enc`, `head3` 삭제. `Mode1Head in_dim: d_model×3(384) → d_model×2(256)`.
+  forward 시그니처: `(lc, lc_mask, params, sigma_curve, target_mode)` — `image`/`use_image` 인자 삭제.
+- `ml/training/losses.py`: `_ssim_loss` 전체 삭제. `composite_loss` weights `{mode1, mode2, physics, calibration}`.
+  return dict: `{total, mode1_task, mode2_task, mode1_cal, mode2_cal, physics}` — `mode3_task`, `ssim` 삭제.
+- `ml/training/dataset.py`: image 로딩 블록 전체 삭제. return dict에 `image`, `use_image`, `target_image` 없음.
+  default `modes=(1,2)`. `build_weighted_sampler` default `mode_weights=[1.0, 1.0]`.
+- `ml/training/trainer.py`: `_step`에서 `use_image`/`image` 삭제. `fine_tune`에서 `img_enc` 제거.
+  `evaluate`에서 mode3 제거.
+- `ml/training/physics_pairing.py`: `image`/`use_image` 삭제.
+- `inversion/obs_to_features.py`: `image_size` 파라미터 삭제. 반환 dict에 `image`/`use_image` 없음.
+- `inversion/mode3_wrapper.py`: 파일 삭제.
+- `ml/utils/mock_generator.py`: `image_size`, `_gaussian_source`, `_sis_lens_image` 삭제.
+  `create_mock_h5`에서 `images/` 그룹, `mode3_source_residual` 저장 없음.
+- `config/ml.yaml`: `image_size`, `image_backbone`, `modes: [1,2,3]→[1,2]`, `mode_sampling_weights: [1.0,1.0]`,
+  `loss_weights.mode3`/`ssim` 삭제.
+- `tests/test_mode3_wrapper.py`, `tests/benchmarks/test_source_psnr.py`: 파일 삭제.
+
+### 변경
+- `pipelines/run_mode1.py`, `pipelines/train_corrector.py`, `scripts/phase4_v0_4_round.py`,
+  `ml/training/round_eval.py`, `scripts/phase4_v0_4_r_ceiling.py` 및 historical round scripts
+  (v2_6, phase4_v0_1/2/3/3_1): `image`/`use_image`/`image_size` 참조 전부 제거.
+- `tests/`: `test_heads.py`, `test_encoders.py`, `test_losses_amp_safe.py`, `test_corrector.py`,
+  `test_round_eval_common.py`, `test_run_mode1_correction.py`, `test_dataset.py`, `test_trainer.py` 갱신.
+
+### 근거 (DECISIONS.md [2026-05-25] 참조)
+- 학습(`use_image=True`)과 추론(`I_obs=None → use_image=False`) 경로 구조적 불일치 해소.
+- Mode1Head 입력 차원 낭비 제거(1/3이 항상 0인 `h_img` concatenation).
+- 실제 Mode 3 카탈로그 데이터 부재 (nonzero target 0%).
+- `_ssim_loss` fp16/autocast underflow NaN 발원지 제거.
+- v0.3/v0.3.1 NaN 붕괴 위험 원천 제거.
+
+### 호환성 주의
+- v0.4 checkpoint (`head1.net.0.weight` shape 384×…)는 v0.5 모델과 **비호환**.
+  Kaggle CUDA에서 v0.5 기반 재학습 필요. 목표: unfiltered r ≥ 0.60, RMSE ≤ 5.5, coverage CI ∩ [0.62,0.78].
+- 데이터 생성 코드(`error_catalog.py`, `data_adapters`)는 HDF5에 여전히 `images/` 그룹과
+  `mode3_source_residual`을 저장하지만, 학습 코드는 이를 읽지 않는다(후방 호환 스키마).
+
+### 검증
+```
+python -c "from ml.models.heads import Mode1Head, Mode2Head; print('heads OK')"
+python -c "from ml.models.encoders import LightCurveEncoder, ParamEncoder, SigmaCurveEncoder; print('encoders OK')"
+python -c "from ml.models.error_corrector import MultiModalErrorCorrector; ..."  # forward OK, mode1/mode2 shape 확인
+python -c "from ml.training.losses import composite_loss; ..."  # keys: [total,mode1_task,mode2_task,mode1_cal,mode2_cal,physics]
+pytest -q tests/test_heads.py tests/test_encoders.py tests/test_losses_amp_safe.py tests/test_corrector.py
+         tests/test_dataset.py tests/test_trainer.py tests/test_round_eval_common.py  # 관련 회귀 통과
+```
+`grep -rn "Mode3Head\|ImageEncoder\|use_image\|image_size\|_ssim_loss" ml/ inversion/ pipelines/ config/` → 0건.
+
+## [2026-05-25] — Phase 5 physics loss 정식화 + trainer/round 평가 공용화
+- `ml/training/losses.py`: 기존 correction L2 대리 physics loss를 Mode 1/2 D_Δt 일관성 패널티로 교체. `H0_corrected`와 SIE `theta_E` first-order Fermat scaling이 같은 time-delay distance를 함의하는지 fp32/autocast-off로 계산한다. Mode 3은 제외.
+- `ml/training/physics_pairing.py` 추가. 같은 batch를 Mode 1/2로 paired forward해 physics loss 입력을 만들며, checkpoint 구조는 변경하지 않는다. v0.4 Mode 2 target이 zero placeholder이면 `mode2_label_available=false`로 physics loss가 0으로 degrade된다.
+- `ml/training/round_eval.py` 추가. target-scaler 역변환, `H0_approx + correction` 평가, no-correction/perfect-joint baseline, calibration coverage, bootstrap CI, acceptance/leak report를 공용화하고 `CorrectorTrainer.evaluate`와 `scripts/phase4_v0_4_round.py`가 같은 평가 코드를 호출하게 했다.
+- `ml/models/error_corrector.py`: Mode 1/2-only 배치의 dummy skip feature shape 표현을 명시화. Mode 3은 삭제 예정 정책에 따라 최소 변경만 수행.
+- v0.4 Mode 2 데이터 확인: `data/mock/phase4_v0_4.h5`의 `correction_targets/mode2_dm_correction`은 shape `[500,4]`, nonzero fraction `0.0` → Mode 2 실학습 배선은 데이터 선행 필요로 보류.
+- 문서 갱신: `STATUS.md`의 Phase 5 ML stale `[ ]`를 `[x]`로 정정하고, Mode 3 삭제 예정/신규 투자 금지 정책을 `STATUS.md`·`ARCHITECTURE.md`에 기록. physics loss 결정은 `DECISIONS.md`에 추가.
+- 회귀: `pytest -q tests/test_losses_amp_safe.py tests/test_corrector.py tests/test_trainer.py tests/test_round_eval_common.py` → 21 passed. `python -m py_compile ml/training/round_eval.py ml/training/physics_pairing.py scripts/phase4_v0_4_round.py` 통과.
+
+## [2026-05-25] — Phase 5-A Mode 2 SIE θ+Δt 솔버 물리 정립
+- `inversion/mode2_dm.py`를 placeholder에서 SIE 고정 물리 솔버로 교체. 내부 fit 변수는 `(sigma_v, q, position_angle, beta_x, beta_y)`이고, 공개 `dm_params`는 Phase 4 순서 `[theta_E, q, position_angle, sigma_v]`로 반환한다. `theta_pred = theta_obs.copy()` 경로와 μ-only loss를 제거하고, 렌즈 방정식 `beta=theta-alpha(theta)` 위치 residual + Fermat Δφ 기반 Δt residual을 결합했다.
+- 기본 likelihood는 μ-free다. `mu_obs`와 μ residual weight는 후속 확장 자리만 유지하고 기본 `0.0`이며, solver와 pipeline audit에 `uses_truth_mu_true=false`를 기록한다. SIE 외 모델 및 `approx_level` switch는 거부한다.
+- `pipelines/run_mode2.py` 추가. Phase 4 HDF5의 public 입력(`ray_paths/theta_*`, `observed_features/dt_lc`, `dt_lc_sigma`, redshift/H0)만 읽어 JSON을 쓰고, `--eval-truth`일 때만 `true_values/dm_params_true`로 MOCK 회복 지표를 산출한다.
+- `data/logs/mode2_recovery_eval.json` 생성: `data/mock/phase4_v0_4.h5` 고정 subset n=25 MOCK 평가. full truth가 SIE+NFW+κ_ext라 SIE-only solver 대비 bias가 남음을 정직하게 기록(theta_E median relative error `0.527`, q `0.194`, sigma_v `0.236`; μ leak false).
+- 테스트 갱신: placeholder SIS/NFW μ 기반 테스트를 제거하고 SIE θ+Δt 회복 및 CLI E2E 검증으로 교체. `pytest -q tests/test_inversion_mode2.py tests/test_run_mode2_e2e.py tests/benchmarks/test_dm_recovery.py` → 8 passed.
+
+## [2026-05-25] — Phase 4 v0.4 achievable-r ceiling 산정 + r 기준 확정
+- `scripts/phase4_v0_4_r_ceiling.py` 추가. `LensCorrectionDataset` Mode 1 경로와 동일한 입력(`lc`, `lc_mask`, 20-dim `params`, padded `sigma_curve`, `image=[I_obs,I_obs-S_approx]`)을 flatten하고, `ExtraTreesRegressor(n_estimators=2000, min_samples_leaf=2, max_features=0.5, seed=20260525)`로 correction-space conditional mean을 fit한다. feature extraction에는 truth-side key(`H0_true`, `dt_true`, `mu_true`, `M200`, `concentration`, correction label)를 사용하지 않도록 leak guard를 기록.
+- M2 로컬 실행: `python scripts/phase4_v0_4_r_ceiling.py --bootstrap-n 1000` → `data/logs/phase4_v0_4_r_ceiling.json` 생성. filtered val(n=50) oracle H0 r `0.2495` CI `[-0.0770,0.5319]`, correction-space r `0.9092`; unfiltered all(n=200) oracle H0 r `0.8096` CI `[0.7324,0.8786]`, correction-space r `0.9700`.
+- 기존 model unfiltered H0 r `0.6560`은 unfiltered ceiling의 `0.810`배 달성. filtered model H0 r `0.6207`은 noisy filtered ceiling 기준을 초과하지만, threshold 산식은 사전 고정 규칙 `floor_to_2_decimals(0.80 * filtered_oracle_h0_r)` 그대로 적용.
+- `scripts/phase4_v0_4_round.py`: `filtered_h0_r_min`을 record_only `0.0`에서 정량 기준 `0.19`로 확정. 기존 RMSE/coverage/selection-bias/positive_fraction 기준은 유지.
+- `tests/test_phase4_r_ceiling.py` 추가: leak guard path overlap과 실제 v0.4 catalog feature dimension(dataset Mode 1 path)을 검증. `pytest -q tests/test_phase4_r_ceiling.py` → 2 passed.
+
+## [2026-05-25] — Phase 4 v0.4 20-dim observed_features 정식 재학습 (Kaggle CUDA)
+- 로컬 20-dim 카탈로그(`phase4_v0_4.h5` 41MB / eval / scaler / floor)를 `scripts/sync_to_kaggle.py --execute`로 Kaggle Dataset `donghyun51/lens-phase4-v0-4` 새 버전 업로드(인증 ACCESS_TOKEN). 이전 13-dim BLOCKED 해소. 업로드 검증: train h5 42,707,816 B(=로컬 20-dim, `observed_features` 포함), eval 17,115,456 B.
+- Kaggle CUDA에서 `phase4_v0_4_round.py --phase train --workers 0 --epochs 50 --bootstrap-n 1000` 실행. **equivalence는 `--phase train`으로 의도적 생략**(입력 차원만 13→20, 수치 경로 무변경; CPU↔CUDA 동등성은 5-24 diff 4.47e-08로 입증됨). 데이터 경로 `lens-phase4-v0-4/phase4_v0_4.h5`로 학습됨 확인 = 진짜 20-dim.
+- 학습: 27ep early-stop(best ep19), `best_val_m1=0.1243`(record_only, val_m1 궤적 0.12~0.93 불안정), num_workers=0, **NaN 0**.
+- eval: filtered RMSE `4.53`(CI [3.30,5.75])/r `0.62`/coverage `0.80`(CI [0.66,0.90]), unfiltered RMSE `4.51`(CI [4.02,4.99])/r `0.66`/coverage `0.655`(CI [0.585,0.721]), ratio `0.996`(<=2.5), pos_frac 1.0/1.0, **leak_triggered false**. 13-dim 재현(unfiltered r 0.62) 대비 r 소폭 개선, selection bias·NaN 재발 없음.
+- `all_pass_excluding_record_only=false`는 equivalence 생략으로 acceptance의 CUDA forward diff 행이 `Inf`(미산출)인 단 한 줄 때문이며, 성능/bias/calibration 행은 전부 pass다.
+- v0.4 코드(round/feature_schema/real_catalog/config)는 PR #1로 `origin/main`에 머지됨 확인 → Kaggle 노트북 main clone에 v0.4 스크립트 존재.
+- 남은 작업: Kaggle output에서 checkpoint/eval/infra JSON 회수 후 `par_enc.net.0.weight==(256,20)` 최종 확인하고 BENCHMARKS 고정.
+
+## [2026-05-24] — Phase 4 v0.4 Kaggle CUDA 재현 회수 (⚠️ 13-dim 데이터)
+- Kaggle CUDA(AMP on) full run 결과 회수. **단, Kaggle Dataset 업로드가 인증 미설정으로 BLOCKED이라 학습된 데이터는 구 13-dim `phase4_v0_4.h5`다.** `leak_triggers.param_encoder_input_dim_changed: false`, checkpoint `par_enc.net.0.weight=(256,13)`로 확인 — 20-dim 재학습이 아니라 기존 v0.4 재현이다.
+- 학습: criterion `val.mode1_task`, best ep10 / early-stop ep18(patience 8) / max 50, num_workers=0, NaN 0. `best_val_m1=0.1413`(record_only). val_m1 궤적은 ep별 0.14~0.60으로 불안정.
+- eval: filtered RMSE `6.18`(CI [5.00,7.30]) / r `0.39`, unfiltered RMSE `4.55`(CI [4.08,4.98]) / r `0.62`, unfilt/filt 비율 `0.74`(<=2.5), filtered coverage `0.68`(CI [0.533,0.805]), unfiltered coverage `0.785`, positive_fraction 1.0/1.0. `all_pass_excluding_record_only: true`, `leak_triggered: false`.
+- infra: CPU↔CUDA forward diff `4.47e-08`(<=1e-4). epoch1 CPU/CUDA val_m1 sanity seed42 0.9036/0.9190, seed1337 0.9823/0.9110, seed7 0.7853/0.7902.
+- 판정: 13-dim v0.4 재현 통과, selection bias·NaN 재발 없음. 20-dim 정식 재학습은 Kaggle Dataset에 20-dim 카탈로그 재업로드 후 재실행 필요(다음 작업).
+
 ## [2026-05-24] — Phase 4 v0.4 20-dim observed_features 카탈로그 재생성
 - `data/mock/phase4_v0_4.h5` 재생성: n=500, seed=42, `validity_filter=v0_4`, `observed_features/` 및 `light_curve_quality/` 포함. Mode 1 correction mean/std/min/max `29.065/13.677/3.198/69.339`, train `|mu_truth|max=0.9785`.
 - `data/mock/phase4_v0_4_eval_unfiltered.h5` 재생성: n=200, seed=42, `validity_filter=off`, `eval_role=unfiltered`, 동일 observed feature schema 포함. Mode 1 correction mean/std/min/max `30.378/13.515/6.543/69.339`.

@@ -1,10 +1,9 @@
 data:
   max_lc_len: 1024
   sigma_curve_size: 512
-  image_size: 128
   approx_levels: [1, 2]
-  modes: [1, 2, 3]
-  mode_sampling_weights: [1.0, 1.0, 1.0]
+  modes: [1, 2]
+  mode_sampling_weights: [1.0, 1.0]
   split:
     train: 0.8
     val:   0.1
@@ -47,7 +46,6 @@ model:
   d_model: 128
   n_heads: 4
   cnn_backbone: cnn_small
-  image_backbone: unet_small
   dropout: 0.1
   mode2_max_dm_dim: 4
 
@@ -61,10 +59,8 @@ training:
   loss_weights:
     mode1: 1.0
     mode2: 1.0
-    mode3: 0.5
     physics: 0.1
     calibration: 0.1
-    ssim: 0.1
   amp: true
 
 seed: 1337

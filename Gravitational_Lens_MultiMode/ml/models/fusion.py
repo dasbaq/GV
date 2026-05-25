@@ -1,24 +1,21 @@
 """
-CrossAttentionFusion — 가변 모달리티 fusion.
+CrossAttentionFusion — 3-way 고정 fusion.
 
-Mode 1·2: LC + Param + Σ  (3-way)
-Mode 3:   LC + Param + Σ + Image (4-way, use_image=True)
+LC + Param + Σ-curve token을 self-attention으로 융합.
+Image 모달리티는 삭제됨 (DECISIONS.md [2026-05-25] 참조).
 """
 
 from __future__ import annotations
-from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class CrossAttentionFusion(nn.Module):
     """
-    각 모달리티 feature를 token으로 취급해 Cross-attention으로 융합.
+    각 모달리티 feature를 token으로 취급해 Self-attention으로 융합 (3-way 고정).
 
     입력 : h_lc, h_params, h_sigma  각 [B, d_model]
-           h_img                    [B, d_model]  (옵션)
     출력 : [B, d_model]  fused representation
     """
 
@@ -46,29 +43,21 @@ class CrossAttentionFusion(nn.Module):
         h_lc: torch.Tensor,
         h_params: torch.Tensor,
         h_sigma: torch.Tensor,
-        h_img: Optional[torch.Tensor] = None,
-        use_image: bool = False,
     ) -> torch.Tensor:
         """
         Parameters
         ----------
         h_lc, h_params, h_sigma : [B, d_model]
-        h_img                   : [B, d_model]  (use_image=True일 때만 사용)
-        use_image               : bool
 
         Returns
         -------
         [B, d_model]
         """
-        tokens = [h_lc, h_params, h_sigma]
-        if use_image and h_img is not None:
-            tokens.append(h_img)
-
-        # stack → [B, n_tokens, d_model]
-        seq = torch.stack(tokens, dim=1)
+        # stack → [B, 3, d_model]
+        seq = torch.stack([h_lc, h_params, h_sigma], dim=1)
 
         # Self-attention (cross-modal)
-        attn_out, _ = self.attn(seq, seq, seq)   # [B, n_tokens, d_model]
+        attn_out, _ = self.attn(seq, seq, seq)   # [B, 3, d_model]
         seq = self.norm1(seq + self.drop(attn_out))
 
         # Feed-forward

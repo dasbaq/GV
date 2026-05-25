@@ -1,14 +1,12 @@
 """
-4종 입력 인코더.
+3종 입력 인코더.
 
 LightCurveEncoder   : [B, 2, T] + mask → [B, d_model]
 ParamEncoder        : [B, P]            → [B, d_model]
 SigmaCurveEncoder   : [B, 1, S]         → [B, d_model]
-ImageEncoder        : [B, 1, H, W]      → ([B, d_model], skip_features)
 """
 
 from __future__ import annotations
-from typing import List, Tuple
 
 import torch
 import torch.nn as nn
@@ -110,56 +108,3 @@ class SigmaCurveEncoder(nn.Module):
         x = self.conv(sigma)           # [B, d_model, S]
         x = self.pool(x).squeeze(-1)  # [B, d_model]
         return self.drop(x)
-
-
-# --------------------------------------------------------------------------- #
-# ImageEncoder (2D CNN with skip connections for U-Net decoder)                #
-# --------------------------------------------------------------------------- #
-class _Conv2DBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.GELU(),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.GELU(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class ImageEncoder(nn.Module):
-    """
-    입력 : [B, 2, H, W]
-    출력 : (global_feat [B, d_model], skip_features List[Tensor])
-           skip_features는 Mode3Head U-Net 디코더로 전달.
-    """
-
-    def __init__(self, d_model: int = 128, dropout: float = 0.1) -> None:
-        super().__init__()
-        # 인코더 레벨: 2→32→64→128→d_model
-        self.enc1 = _Conv2DBlock(2, 32)
-        self.enc2 = _Conv2DBlock(32, 64)
-        self.enc3 = _Conv2DBlock(64, 128)
-        self.enc4 = _Conv2DBlock(128, d_model)
-
-        self.pool = nn.MaxPool2d(2)
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.drop = nn.Dropout(dropout)
-        self.d_model = d_model
-
-    def forward(
-        self, img: torch.Tensor
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        s1 = self.enc1(img)                    # [B, 32, H, W]
-        s2 = self.enc2(self.pool(s1))          # [B, 64, H/2, W/2]
-        s3 = self.enc3(self.pool(s2))          # [B, 128, H/4, W/4]
-        s4 = self.enc4(self.pool(s3))          # [B, d_model, H/8, W/8]
-
-        global_feat = self.global_pool(s4).flatten(1)  # [B, d_model]
-        global_feat = self.drop(global_feat)
-
-        return global_feat, [s1, s2, s3, s4]

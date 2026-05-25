@@ -123,7 +123,6 @@ def _apply_ml_correction(
     inputs = build_corrector_inputs(
         feature_spec,
         param_norm=cfg["data"]["param_normalization"],
-        image_size=int(cfg["data"]["image_size"]),
         max_len=int(cfg["data"]["max_lc_len"]),
         sigma_curve_size=int(cfg["data"]["sigma_curve_size"]),
         approx_level=1,
@@ -245,15 +244,13 @@ def _feature_spec_from_phase4_hdf5(
     """
 
     with h5py.File(path, "r") as h5:
-        needed = ("images/I_obs", "approx_outputs/S_approx", "light_curves/F_joint")
+        needed = ("light_curves/F_joint",)
         if not all(key in h5 for key in needed):
             return None
         spec = {
             "F_joint": np.asarray(h5["light_curves/F_joint"][system_index], dtype=np.float32),
             "sigma_noise": np.asarray(h5["light_curves/sigma_noise"][system_index], dtype=np.float32),
             "n_epochs": int(h5["light_curves/n_epochs"][system_index]),
-            "I_obs": np.asarray(h5["images/I_obs"][system_index], dtype=np.float32),
-            "S_approx": np.asarray(h5["approx_outputs/S_approx"][system_index], dtype=np.float32),
             "sigma_curve": (
                 np.asarray(h5["sigma_curve"][system_index], dtype=np.float32)
                 if "sigma_curve" in h5

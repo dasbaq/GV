@@ -1,66 +1,59 @@
-"""
-벤치마크: DM 회복 정확도 (Mode 2) — mock 라벨 기준 상대 오차 < 10%.
+"""Benchmark smoke: Mode 2 SIE DM recovery on synthetic MOCK labels."""
 
-합격 기준: CLAUDE.md 변경 불가.
-"""
-
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from __future__ import annotations
 
 import numpy as np
-import pytest
-from inversion.mode2_dm import invert_dm, _sis_einstein_radius
+
+from core.physics.lens_models import SIELens
+from core.physics.ray_tracing import find_images_thin_lens
+from core.physics.standard_approx import _refine_sie_images
+from inversion.mode2_dm import _time_delay_from_dphi, invert_dm
 
 
-@pytest.mark.parametrize("sigma_v_true,z_lens,z_source", [
-    (200.0, 0.3, 1.5),
-    (280.0, 0.5, 2.0),
-    (320.0, 0.4, 1.8),
-])
-def test_dm_recovery_sis_mock(sigma_v_true, z_lens, z_source):
-    """
-    SIS 렌즈 σ_v 회복 — 상대 오차 < 10%.
-    합격 기준: CLAUDE.md 변경 불가.
-    """
-    theta_E = _sis_einstein_radius(sigma_v_true, z_lens, z_source, H0=70.0)
+def _synthetic_quad(sigma_v: float, q: float, position_angle: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    z_lens = 0.45
+    z_source = 1.8
+    beta = np.array([0.02, 0.03], dtype=float)
+    lens = SIELens(
+        sigma_v=sigma_v,
+        q=q,
+        position_angle=position_angle,
+        z_lens=z_lens,
+        z_source=z_source,
+        cosmology={"H0": 70.0},
+    )
+    theta = _refine_sie_images(
+        find_images_thin_lens(beta, lens, search_box_arcsec=3.5, grid_size=120),
+        lens,
+        beta,
+    )
+    phi = lens.fermat_potential(theta, beta)
+    dt = _time_delay_from_dphi(np.array([abs(phi[0] - phi[1])]), 70.0, z_lens, z_source)
+    truth = np.array([lens.einstein_radius(), q, position_angle, sigma_v], dtype=float)
+    return theta, dt, truth
 
-    # 두 상 (SIS: 두 상이 아인슈타인 반경 양쪽)
-    theta_obs = np.array([
-        [theta_E * 1.6, 0.0],
-        [-theta_E * 0.85, 0.2],
-    ])
-    r = np.linalg.norm(theta_obs, axis=1)
-    mu_obs = np.abs(r / (r - theta_E + 1e-9))
-    dt_obs = np.array([15.0])
 
+def test_dm_recovery_sie_mock_theta_dt_only() -> None:
+    """SIE parameters recover from θ_i + Δt without μ input on MOCK data."""
+
+    theta_obs, dt_obs, truth = _synthetic_quad(280.0, 0.65, 0.45)
     result = invert_dm(
-        dt_obs, theta_obs, mu_obs,
-        H0=70.0, z_lens=z_lens, z_source=z_source,
-        lens_model="SIS", approx_level=1, n_bootstrap=30,
+        dt_obs,
+        theta_obs,
+        mu_obs=None,
+        H0=70.0,
+        z_lens=0.45,
+        z_source=1.8,
+        lens_model="SIE",
+        approx_level=0,
+        n_bootstrap=3,
+        dt_sigma=np.array([dt_obs[0] * 0.01], dtype=float),
     )
 
-    recovered  = result["dm_params"][0]
-    rel_err    = abs(recovered - sigma_v_true) / sigma_v_true
+    pred = np.asarray(result["dm_params"], dtype=float)
+    rel = np.abs(pred[[0, 1, 3]] - truth[[0, 1, 3]]) / np.abs(truth[[0, 1, 3]])
+    angle_err = abs(np.arctan2(np.sin(pred[2] - truth[2]), np.cos(pred[2] - truth[2])))
+    assert np.all(rel < np.array([0.03, 0.06, 0.03]))
+    assert angle_err < 0.03
+    assert result["input_audit"]["uses_truth_mu_true"] is False
 
-    assert rel_err < 0.10, (
-        f"⚠️ DM 회복 상대 오차 {rel_err:.3f} ≥ 10%  "
-        f"(σ_v_true={sigma_v_true:.1f}, predicted={recovered:.1f})"
-    )
-
-
-def test_dm_recovery_nfw_mock():
-    """NFW 파라미터 회복 — 최적화 수렴 및 범위 확인."""
-    theta_obs = np.array([[1.2, 0.3], [-0.9, -0.2]])
-    mu_obs    = np.array([2.5, 1.8])
-    dt_obs    = np.array([20.0])
-
-    result = invert_dm(
-        dt_obs, theta_obs, mu_obs,
-        H0=70.0, z_lens=0.3, z_source=1.5,
-        lens_model="NFW", approx_level=1, n_bootstrap=20,
-    )
-
-    log10_M200, c_nfw = result["dm_params"]
-    assert 12.0 <= log10_M200 <= 14.0, f"log10_M200={log10_M200:.2f} 범위 초과"
-    assert 3.0  <= c_nfw      <= 15.0, f"c_nfw={c_nfw:.2f} 범위 초과"

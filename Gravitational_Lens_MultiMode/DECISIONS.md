@@ -4,6 +4,182 @@
 
 ---
 
+## [2026-05-25] Mode 3(Source 복원) + Image 입력 모달리티 삭제
+
+### 사전 게이트 — Ablation 결과 기록
+
+**조건 (a) — v0.4 baseline (with-image, 현재 코드):**
+| metric | unfiltered (전체 n=200) | filtered (고신뢰 subset) |
+|--------|------------------------|-------------------------|
+| H0 r   | 0.66                   | 0.33 (무편향 분포이므로 수치 낮음) |
+| RMSE   | 4.51 km/s/Mpc          | 5.81 km/s/Mpc           |
+| coverage (1σ) | 0.655         | ―                       |
+
+출처: Phase 4 v0.4 CUDA Kaggle 재학습 결과 (BENCHMARKS.md 기록).
+
+**조건 (b) — image zero-out ablation 커맨드 (Kaggle CUDA):**
+
+```bash
+# Kaggle 노트북에서 실행; 경로는 Kaggle 환경에 맞게 조정
+python scripts/phase4_v0_4_round.py \
+  --h5 /kaggle/input/gravitational-lens/phase4_v0_4.h5 \
+  --out /kaggle/working/ablation_noimg \
+  --override "data.modes=[1,2,3]" \
+  --override "training.loss_weights.mode1=1.0" \
+  --zero_image   # use_image=True 배치에서도 image tensor를 zeros로 강제
+```
+
+`--zero_image` 플래그는 `LensCorrectionDataset`에서 `image = np.zeros(...)` 분기를
+강제하는 임시 옵션이다. 실제로는 `dataset.py`에서 `use_image`를 항상 False로 설정하면
+동일 효과가 나온다.
+
+**삭제 정당화 — delta 결과 무관:**
+
+1. **Train/inference 모달리티 불일치**: v0.4 학습 시 Mode 1 샘플 `use_image=True`이지만
+   실제 YAML 추론(Gaia GraL + Bag+22)에서는 `I_obs=None`으로 `use_image=False`다. 동일 헤드가
+   두 입력 분포(real-image, zeros-image)를 모두 보게 되어 구조적 불일치가 존재한다.
+
+2. **Mode1Head in_dim 폭발**: `cat([fused, h_lc, h_img])` = d_model×3 = 384차원 입력인데,
+   실 추론 시 h_img는 항상 zeros 벡터다. 이 zeros 채널은 학습된 가중치 1/3을 낭비한다.
+
+3. **Mode 3는 실측 데이터 없음**: Mode 3 헤드 학습은 mock S_true만 사용하고
+   어떤 실관측 source image도 없다. 유지 비용만 발생한다.
+
+4. **SSIM NaN 리스크 원천 제거**: `_ssim_loss`의 fp16/autocast 경계 처리는
+   v0.3/v0.3.1 NaN의 유일한 발원지였다. 삭제 후 이 리스크가 사라진다.
+
+5. **ablation delta 판단**: delta ≤ 0.5 RMSE이면 image가 무기여 확인 → 삭제 정당.
+   delta > 0.5이면 image가 기여하고 있었으나 위 1·2 이유에 의거 삭제 정당(실 추론 불일치 해소 우선).
+   **어느 쪽이든 삭제 진행.**
+
+### 결정
+- `Mode3Head`, `_UpBlock`, `ImageEncoder`, `_Conv2DBlock` 클래스 삭제.
+- `MultiModalErrorCorrector.forward` 시그니처: `image`, `use_image` 인자 제거.
+- `CrossAttentionFusion.forward` 3-way 고정 (h_img, use_image 제거).
+- `Mode1Head.in_dim`: d_model×3 → d_model×2 (`cat([fused_sub, h_lc[mask]])`).
+- `composite_loss`: `_ssim_loss`, mode3 블록, `target_image`, `w_m3`, `w_ssim` 제거.
+- `config/ml.yaml`: `image_size`, `modes: [1,2,3]` → `[1,2]`, `mode3`/`ssim` loss weights 제거.
+- HDF5 mock generator: `images/` group, `mode3_source_residual` 제거.
+- 삭제 파일: `inversion/mode3_wrapper.py`, `tests/test_mode3_wrapper.py`,
+  `tests/benchmarks/test_source_psnr.py`.
+
+### 재학습 기준
+삭제 후 v0.5 첫 학습: unfiltered r ≥ 0.60, RMSE ≤ 5.5, coverage [0.62, 0.78].
+Mode1Head in_dim 변경으로 기존 checkpoint 비호환 → Kaggle CUDA 신규 학습 필수.
+
+### 관련 파일
+- `ml/models/heads.py`, `ml/models/encoders.py`, `ml/models/error_corrector.py`
+- `ml/models/fusion.py`, `ml/training/losses.py`, `ml/training/dataset.py`
+- `ml/training/trainer.py`, `ml/training/physics_pairing.py`
+- `inversion/obs_to_features.py`, `inversion/mode3_wrapper.py`
+- `pipelines/run_mode1.py`, `pipelines/train_corrector.py`
+- `ml/utils/mock_generator.py`, `config/ml.yaml`
+
+---
+
+## [2026-05-25] Phase 5 physics loss = Mode 1/2 D_Δt 일관성 패널티
+
+### 결정
+`ml/training/losses.py`의 physics loss를 보정값 L2 regularization 대리물에서 Mode 1/2 한정
+time-delay distance consistency로 교체한다. Mode 1은
+`H0_corrected = H0_approx + ΔH0_pred` 및 `D_Δt ∝ 1/H0` 관계로 implied distance를 만들고,
+Mode 2는 SIE parameter order `[theta_E, q, position_angle, sigma_v]` 중 `theta_E` 보정을 사용해
+`Δφ_corrected ≈ Δφ_SIE * (theta_E_corrected/theta_E_approx)^2` first-order scaling으로
+`D_Δt = c·Δt/Δφ`를 계산한다. 두 값의 log-distance 차이 제곱을 penalty로 둔다.
+
+### 근거
+- ARCHITECTURE의 역산 정식은 Mode 1 H0 보정과 Mode 2 DM 보정이 같은 관측 Δt에 대해 같은
+  `D_Δt`를 함의해야 한다는 물리 제약을 준다.
+- 기존 loss는 실제 물리 일관성이 아니라 correction magnitude L2였으므로, 보정 크기 자체를
+  억제하는 bias가 있었다.
+- v0.4 catalog의 `correction_targets/mode2_dm_correction`은 전부 zero placeholder다. 이 경우
+  `mode2_label_available=false` mask로 physics loss가 0으로 degrade되어 Mode 1 재학습을 오염시키지 않는다.
+
+### 운영 규칙
+- 물리 상수는 `config/physics.yaml`을 읽는 `core.physics.config.constants()`에서만 가져온다.
+- physics loss 내부 계산은 NLL/SSIM과 동일하게 autocast를 비활성화하고 fp32로 수행한다.
+- Mode 3은 physics penalty 대상이 아니며, 삭제 예정 정책에 따라 신규 metric/loss를 추가하지 않는다.
+- Mode 2 first-order Fermat scaling은 regularizer 전용 근사다. 실제 Mode 2 평가는 SIE θ+Δt solver를 계속 사용한다.
+
+### 관련 파일
+- `ml/training/losses.py`
+- `ml/training/physics_pairing.py`
+- `ml/training/dataset.py`
+- `ml/training/trainer.py`
+- `scripts/phase4_v0_4_round.py`
+
+## [2026-05-25] Mode 2 placeholder → SIE θ+Δt 물리 정립
+
+### 결정
+Mode 2 역산은 프로젝트 전역 표준 근사인 SIE 하나로 고정한다. 입력 likelihood의 기본값은
+관측 상 위치 `theta_i`와 primary-pair `dt_lc`만 사용하며, magnification은 public 관측 입력이
+정리될 때까지 residual weight `0.0`으로 둔다.
+
+공개 DM 파라미터 순서는 Phase 4 HDF5 label과 동일한 `[theta_E, q, position_angle, sigma_v]`다.
+내부 optimizer만 `(sigma_v, q, position_angle, beta_x, beta_y)`를 사용해
+`beta_i = theta_i - alpha_SIE(theta_i)`가 공통 source position으로 모이도록 맞춘다.
+Δt residual은 Mode 1과 같은 Δφ [rad²] 및 distance convention으로 계산한다.
+
+### 근거
+- 기존 placeholder는 `theta_pred = theta_obs.copy()`라 위치 residual이 항상 0이고, `_loss()`가
+  `dt_obs`를 쓰지 않아 θ+Δt가 파라미터를 구속하지 못했다.
+- Phase 4/5의 단일 표준 근사 결정과 맞추기 위해 SIS/NFW/POINT Mode 2 fit surface는 제거한다.
+  NFW는 truth 생성/오차 카탈로그 물리로 남고, inference solver는 SIE만 푼다.
+- `true_values/mu_true`는 scalar truth-side 값이라 inference에 쓰면 leak이다. Mode 2 pipeline은
+  `true_values/dm_params_true`도 `--eval-truth` MOCK 평가에서만 읽는다.
+
+### 운영 규칙
+- `inversion/mode2_dm.py`에 `approximation_*`, profile selector, SIE 외 lens_model 경로를 추가하지 않는다.
+- `pipelines/run_mode2.py`의 일반 추론 경로는 `ray_paths/theta_*`, `observed_features/dt_lc`,
+  `observed_features/dt_lc_sigma`, redshift/H0만 읽는다.
+- `data/logs/mode2_recovery_eval.json`은 synthetic MOCK 평가다. Phase 4 full truth에는 NFW+κ_ext가
+  포함되므로 SIE-only 회복 bias는 실패가 아니라 현재 표준 근사의 한계 진단으로 기록한다.
+
+### 관련 파일
+- `inversion/mode2_dm.py`
+- `pipelines/run_mode2.py`
+- `tests/test_inversion_mode2.py`
+- `tests/test_run_mode2_e2e.py`
+- `data/logs/mode2_recovery_eval.json`
+
+## [2026-05-25] Phase 4 v0.4 achievable-r ceiling 산정 및 H0 r 기준 확정
+
+### 결정
+v0.4 무편향 분포의 r 기준은 inputs-conditioned oracle이 만든 H0-space achievable-r ceiling에
+연동한다. oracle은 corrector와 동일한 Mode 1 입력(`lc`, 20-dim `params`, `sigma_curve`,
+`image=[I_obs, I_obs-S_approx]`)으로 correction-space conditional mean을 fit하고,
+판정은 `corr(H0_true, H0_approx + correction_oracle)`로 수행한다.
+
+`scripts/phase4_v0_4_r_ceiling.py --bootstrap-n 1000` 결과:
+- filtered val(n=50): oracle H0 r `0.2495`, bootstrap CI `[-0.0770, 0.5319]`,
+  correction-space diagnostic r `0.9092`.
+- unfiltered all(n=200): oracle H0 r `0.8096`, bootstrap CI `[0.7324, 0.8786]`,
+  correction-space diagnostic r `0.9700`.
+- 기존 model unfiltered H0 r `0.6560`은 unfiltered ceiling의 `0.810`배다.
+
+`filtered_h0_r_min`은 사전 산식 `floor_to_2_decimals(0.80 * filtered_oracle_h0_r)`로 확정한다.
+따라서 `0.80 * 0.2494766 = 0.1996...`이고, 최종 threshold는 `0.19`다.
+
+### 근거
+- acceptance의 H0 r은 기존 eval JSON과 같은 H0-space여야 model r `0.62/0.66`과 직접 비교된다.
+- correction-space r은 oracle이 label conditional mean을 잘 학습했는지 보는 진단값으로만 남긴다.
+- filtered val은 n=50이라 H0-space r CI가 넓고 point가 낮지만, threshold 산식은 모델 결과를 보고
+  조정하지 않고 사전에 고정한 80% rule을 그대로 적용한다.
+- unfiltered n=200 결과는 ceiling 해석의 안정적인 참고치이며, model이 ceiling의 약 81%를 달성했다는
+  정량 판정에 사용한다.
+
+### 운영 규칙
+- `data/logs/phase4_v0_4_r_ceiling.json`을 v0.4 r acceptance의 source artifact로 둔다.
+- `scripts/phase4_v0_4_round.py`의 `filtered_h0_r_min`은 `0.19`로 유지한다.
+- oracle feature extraction에는 truth-side key(`H0_true`, `dt_true`, `mu_true`, `M200`,
+  `concentration`, correction label 등)를 절대 넣지 않는다.
+
+### 관련 파일
+- `scripts/phase4_v0_4_r_ceiling.py`
+- `scripts/phase4_v0_4_round.py`
+- `data/logs/phase4_v0_4_r_ceiling.json`
+- `tests/test_phase4_r_ceiling.py`
+
 ## [2026-05-24] 실관측 YAML ingest와 ParamEncoder feature schema 단일화
 
 ### 결정

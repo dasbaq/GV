@@ -3,7 +3,8 @@ composite_loss — Mode별 task loss + physics + calibration.
 
 Mode 1: MSE(H0) + Gaussian NLL
 Mode 2: 마스킹된 MSE(dm_params) + Gaussian NLL
-Mode 3: 픽셀 MSE + (1 - SSIM)  [torch 구현, skimage 미사용]
+
+Mode 3(Source 복원)과 SSIM loss는 삭제됨 (DECISIONS.md [2026-05-25] 참조).
 """
 
 from __future__ import annotations
@@ -12,51 +13,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-
-# --------------------------------------------------------------------------- #
-# SSIM (torch 기반, skimage 미사용)                                             #
-# --------------------------------------------------------------------------- #
-def _ssim_loss(pred: torch.Tensor, target: torch.Tensor,
-               window_size: int = 11, C1: float = 0.01**2,
-               C2: float = 0.03**2) -> torch.Tensor:
-    """
-    1 - SSIM(pred, target).  입력: [B, 1, H, W].
-    반환: 스칼라
-
-    AMP/fp16 안전: autocast를 비활성화하고 내부 계산을 float32로 강제한다.
-    autocast 하에서는 conv2d가 입력 dtype과 무관하게 fp16으로 다운캐스트되어
-    분모 eps(1e-8)가 underflow하고, conv 누적오차로 분산이 음수가 되면 ratio가
-    inf/nan이 된다(v0.3/v0.3.1 학습 NaN의 발원지). 분산은 0으로 클램프한다.
-    """
-    device_type = "cuda" if pred.is_cuda else "cpu"
-    with torch.autocast(device_type=device_type, enabled=False):
-        pred = pred.float()
-        target = target.float()
-        # 가우시안 커널
-        sigma = 1.5
-        coords = torch.arange(window_size, device=pred.device, dtype=pred.dtype)
-        coords -= window_size // 2
-        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
-        g /= g.sum()
-        kernel = g[:, None] * g[None, :]                     # [w, w]
-        kernel = kernel.unsqueeze(0).unsqueeze(0)            # [1, 1, w, w]
-        pad = window_size // 2
-
-        mu_x  = F.conv2d(pred,   kernel, padding=pad)
-        mu_y  = F.conv2d(target, kernel, padding=pad)
-        mu_x2 = mu_x * mu_x
-        mu_y2 = mu_y * mu_y
-        mu_xy = mu_x * mu_y
-
-        # 분산/공분산은 수치오차로 음수가 될 수 있으므로 클램프
-        sig_x  = (F.conv2d(pred   * pred,   kernel, padding=pad) - mu_x2).clamp_min(0.0)
-        sig_y  = (F.conv2d(target * target, kernel, padding=pad) - mu_y2).clamp_min(0.0)
-        sig_xy = F.conv2d(pred   * target, kernel, padding=pad) - mu_xy
-
-        ssim_map = ((2*mu_xy + C1) * (2*sig_xy + C2)) / (
-            (mu_x2 + mu_y2 + C1) * (sig_x + sig_y + C2) + 1e-8
-        )
-        return 1.0 - ssim_map.mean()
+from core.physics.config import constants
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +39,89 @@ def _gaussian_nll(pred: torch.Tensor, target: torch.Tensor,
         return (0.5 * ((pred - target) ** 2 / var + two_log_sigma)).mean()
 
 
+def _physics_d_dt_consistency_loss(physics_pred: dict, batch: dict) -> torch.Tensor:
+    """Mode 1/2 D_Δt consistency penalty in fp32.
+
+    Units: H0 and Mode 1 correction are [km/s/Mpc], ``dt_lc`` is [days],
+    ``theta_E`` is [arcsec], Fermat-potential differences are [rad²], and
+    distances are [Mpc]. SIE 표준 근사 가정: Mode 2 uses only the fixed SIE
+    parameter order ``[theta_E, q, position_angle, sigma_v]``. The Mode 2
+    Fermat-potential update is a first-order scaling
+    ``Δφ_corrected ≈ Δφ_SIE * (theta_E_corrected/theta_E_approx)^2``; this is
+    a consistency regularizer, not a replacement for the full solver.
+
+    If Mode 2 labels are all-zero placeholder data, ``mode2_label_available``
+    masks those rows and the loss degrades to exactly zero.
+    """
+
+    mode1 = physics_pred.get("mode1")
+    mode2 = physics_pred.get("mode2")
+    if mode1 is None or mode2 is None:
+        ref = batch["target"].float()
+        return ref.new_tensor(0.0)
+
+    required = (
+        "h0_approx",
+        "dt_lc",
+        "theta_E_approx",
+        "dphi_sie_rad2",
+        "mode1_target_mean",
+        "mode1_target_scale",
+        "mode2_target_mean",
+        "mode2_target_scale",
+        "mode2_label_available",
+    )
+    if not all(key in batch for key in required):
+        ref = batch["target"].float()
+        return ref.new_tensor(0.0)
+
+    device_type = "cuda" if batch["target"].is_cuda else "cpu"
+    with torch.autocast(device_type=device_type, enabled=False):
+        c = constants()
+        c_m_s = float(c["c_m_s"])
+        day_s = float(c["day_s"])
+        mpc_m = float(c["Mpc_m"])
+
+        h0_approx = batch["h0_approx"].float()
+        dt_lc = batch["dt_lc"].float()
+        theta_e = batch["theta_E_approx"].float()
+        dphi_sie = batch["dphi_sie_rad2"].float()
+        label_available = batch["mode2_label_available"].bool()
+
+        h0_corr = (
+            mode1["h0_correction"].float() * batch["mode1_target_scale"].float()
+            + batch["mode1_target_mean"].float()
+        )
+        mode2_mean = batch["mode2_target_mean"].float()
+        mode2_scale = batch["mode2_target_scale"].float()
+        theta_corr = mode2["dm_correction"].float()[:, 0] * mode2_scale[:, 0] + mode2_mean[:, 0]
+
+        h0_corrected = h0_approx + h0_corr
+        theta_corrected = theta_e + theta_corr
+        ddt_approx = (c_m_s * day_s * dt_lc) / (dphi_sie * mpc_m)
+        ddt_mode1 = ddt_approx * h0_approx / h0_corrected.clamp_min(1.0e-6)
+        dphi_mode2 = dphi_sie * (theta_corrected / theta_e.clamp_min(1.0e-6)).pow(2)
+        ddt_mode2 = (c_m_s * day_s * dt_lc) / (dphi_mode2 * mpc_m)
+
+        valid = (
+            label_available
+            & torch.isfinite(ddt_mode1)
+            & torch.isfinite(ddt_mode2)
+            & (dt_lc > 0.0)
+            & (dphi_sie > 0.0)
+            & (theta_e > 0.0)
+            & (theta_corrected > 0.0)
+            & (h0_approx > 0.0)
+            & (h0_corrected > 0.0)
+            & (ddt_mode1 > 0.0)
+            & (ddt_mode2 > 0.0)
+        )
+        if not valid.any():
+            return h0_approx.new_tensor(0.0)
+        diff = torch.log(ddt_mode1[valid]) - torch.log(ddt_mode2[valid])
+        return diff.pow(2).mean()
+
+
 # --------------------------------------------------------------------------- #
 # composite_loss                                                                #
 # --------------------------------------------------------------------------- #
@@ -95,12 +135,11 @@ def composite_loss(
     ----------
     pred    : MultiModalErrorCorrector.forward() 출력
     batch   : DataLoader 배치 dict
-    weights : {mode1, mode2, mode3, physics, calibration, ssim}
+    weights : {mode1, mode2, physics, calibration}
 
     Returns
     -------
-    dict: {total, mode1_task, mode2_task, mode3_task,
-           mode1_cal, mode2_cal, physics, ssim}
+    dict: {total, mode1_task, mode2_task, mode1_cal, mode2_cal, physics}
     """
     device = batch["target"].device
     zero   = torch.tensor(0.0, device=device)
@@ -108,21 +147,16 @@ def composite_loss(
     target_mode = batch["target_mode"]              # [B]
     target      = batch["target"]                   # [B, max_label_dim]
     target_dim  = batch["target_dim"]               # [B]
-    target_img  = batch["target_image"]             # [B, H, W]
 
     w_m1  = weights.get("mode1", 1.0)
     w_m2  = weights.get("mode2", 1.0)
-    w_m3  = weights.get("mode3", 0.5)
     w_phy = weights.get("physics", 0.1)
     w_cal = weights.get("calibration", 0.1)
-    w_ssim= weights.get("ssim", 0.1)
 
     loss_m1_task = zero.clone()
     loss_m2_task = zero.clone()
-    loss_m3_task = zero.clone()
     loss_m1_cal  = zero.clone()
     loss_m2_cal  = zero.clone()
-    loss_ssim    = zero.clone()
     loss_physics = zero.clone()
 
     # ---- Mode 1 ----
@@ -156,28 +190,13 @@ def composite_loss(
         )
         loss_m2_cal = nll2
 
-    # ---- Mode 3 ----
-    mask3 = (target_mode == 3)
-    if mask3.any() and pred["mode3"] is not None:
-        p3    = pred["mode3"]
-        t_img = target_img[mask3].unsqueeze(1)      # [n3, 1, H, W]
-        v3    = p3["source_residual"]               # [n3, 1, H, W]
-
-        loss_m3_task = F.mse_loss(v3, t_img)
-        loss_ssim    = _ssim_loss(v3, t_img)
-
-    # ---- Physics penalty: D_Δt 일관성 (Mode 1·2 공통) ----
-    # 간단 구현: Mode 1 예측 H0 보정값과 Mode 2 DM 파라미터 보정값의
-    # 크기 패널티 (실제 일관성 검증은 full physics 필요 — 여기선 L2 regularization 대리)
-    if pred["mode1"] is not None:
-        loss_physics = loss_physics + 0.5 * (pred["mode1"]["h0_correction"] ** 2).mean()
-    if pred["mode2"] is not None:
-        loss_physics = loss_physics + 0.5 * (pred["mode2"]["dm_correction"] ** 2).mean()
+    # ---- Physics penalty: Mode 1/2 D_Δt 일관성 ----
+    if pred.get("physics") is not None:
+        loss_physics = _physics_d_dt_consistency_loss(pred["physics"], batch)
 
     total = (
         w_m1  * (loss_m1_task + w_cal * loss_m1_cal)
       + w_m2  * (loss_m2_task + w_cal * loss_m2_cal)
-      + w_m3  * (loss_m3_task + w_ssim * loss_ssim)
       + w_phy * loss_physics
     )
 
@@ -185,9 +204,7 @@ def composite_loss(
         "total":      total,
         "mode1_task": loss_m1_task,
         "mode2_task": loss_m2_task,
-        "mode3_task": loss_m3_task,
         "mode1_cal":  loss_m1_cal,
         "mode2_cal":  loss_m2_cal,
         "physics":    loss_physics,
-        "ssim":       loss_ssim,
     }
