@@ -3,6 +3,31 @@
 
 ---
 
+## [2026-05-26] — v0.7 calibration weight 상향 (coverage 개선)
+
+### 추가
+- `scripts/phase4_v0_7_round.py` 추가. v0.6 대비 변경 사항은 calibration loss weight `0.1 → 0.3` 하나뿐.
+  모델 구조(Mode1Head in_dim=384, ImageEncoder I_obs 1ch), 데이터(phase4_v0_4.h5 20-dim),
+  optimizer, AMP 정책, 승인 기준은 v0.6와 완전 동일.
+
+### 배경 및 근거
+- v0.6 결과: RMSE 5.258, r 0.503, coverage **0.52** (목표 [0.62, 0.78] **미달**).
+- `coverage = P(|z| ≤ 1), z = (H0_corrected - H0_true) / pred_sigma`.
+  coverage 0.52는 pred_sigma가 실제 잔차의 약 71% 수준으로 과소추정됨을 의미한다.
+- `composite_loss`에서 NLL calibration 항의 유효 기여는 `w_m1 * w_cal = 1.0 * 0.1 = 0.1`이지만
+  task MSE 기여는 `w_m1 * 1.0 = 1.0`이다. NLL이 log_sigma를 충분히 학습하지 못해 sigma가 너무 작아짐.
+- calibration weight `0.1 → 0.3`으로 3배 상향 시 NLL의 log_sigma 학습 영향력이 3배 강해지고,
+  pred_sigma가 실제 잔차 크기에 더 잘 맞춰지는 방향으로 학습.
+- RMSE/r이 소폭 하락할 수 있으나 coverage가 목표 범위로 진입하면 허용(calibration–task trade-off).
+
+### 검증
+```
+python -m py_compile scripts/phase4_v0_7_round.py  # OK
+python scripts/phase4_v0_7_round.py --help         # 옵션 정상 출력
+```
+
+---
+
 ## [2026-05-25] — v0.5 Mode 3(Source 복원) + Image 입력 모달리티 삭제
 
 ### 삭제
