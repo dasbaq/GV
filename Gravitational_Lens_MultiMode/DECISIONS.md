@@ -4,6 +4,54 @@
 
 ---
 
+## [2026-05-26] v0.7 — calibration loss weight 0.1 → 0.3 (coverage 개선)
+
+### 결정
+`scripts/phase4_v0_7_round.py`에서 `cfg["training"]["loss_weights"]["calibration"]`을
+`0.1`에서 `0.3`으로 상향한다. 모델 구조·데이터·optimizer·AMP 정책은 v0.6과 동일.
+
+### 배경
+v0.6 결과: RMSE 5.258, r 0.503, coverage **0.52** (목표 [0.62, 0.78] 미달).
+
+`coverage = P(|z| ≤ 1)`, where `z = (H0_corrected - H0_true) / pred_sigma`.
+
+coverage 0.52에 대응하는 Gaussian 역산:
+`P(|N(0,1)| ≤ k) = 0.52 → k ≈ 0.71`
+즉 pred_sigma가 실제 잔차 크기의 약 71%로 과소추정되고 있다.
+
+### 결정 근거
+`composite_loss` 내 Mode 1 total loss:
+```
+total_m1 = w_m1 * (MSE + w_cal * NLL)
+         = 1.0  * (MSE + 0.1  * NLL)   ← v0.6
+```
+NLL 유효 비중이 10%에 불과해 `log_sigma`에 대한 gradient가 약하다.
+NLL 최적해 조건 `d(NLL)/d(log_sigma) = 0` → `sigma_opt = |error|`인데,
+MSE 최소화가 지배적일 때 log_sigma가 해당 방향으로 충분히 수렴하지 못한다.
+
+`w_cal = 0.3`으로 3배 상향 시:
+```
+total_m1 = 1.0 * (MSE + 0.3 * NLL)   ← v0.7
+```
+NLL gradient 영향력이 3배 강해져 sigma가 실제 잔차를 더 잘 포괄.
+
+### 트레이드오프
+- coverage 개선(목표): NLL weight 증가 → sigma 증가 → 1σ 구간 확장
+- RMSE/r 소폭 하락 가능: MSE와 NLL이 경쟁 → 예측 정밀도 미세 저하 허용
+- 허용 기준: coverage CI가 [0.62, 0.78]와 겹치면 RMSE/r이 v0.6 대비 소폭 하락해도 통과
+
+### 운영 규칙
+- calibration weight 변경은 `load_cfg()`의 `_CALIBRATION_WEIGHT_V07 = 0.3` 상수로 단일 관리.
+- config/ml.yaml의 `calibration: 0.1`은 변경하지 않는다 (다른 라운드와 분리).
+- 만약 v0.7에서도 coverage < 0.60이면, `w_cal = 0.5` 또는 직접 coverage 목표를 최적화하는
+  pinball/interval score 추가를 다음 라운드에서 검토한다.
+
+### 관련 파일
+- `scripts/phase4_v0_7_round.py`
+- `config/ml.yaml` (변경 없음, v0.7은 round 스크립트 내에서 override)
+
+---
+
 ## [2026-05-25] v0.6 — Image 입력 (I_obs) Mode 1/2 전용 복구
 
 ### 배경

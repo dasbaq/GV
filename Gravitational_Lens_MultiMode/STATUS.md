@@ -397,8 +397,10 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
 3. [x] **완료(2026-05-25)** — 20-dim 산출물 회수 완료
    (`checkpoints/phase4_v0_4_imgres_best.pt`, `logs/phase4_v0_4_imgres_h0_eval{,_unfiltered}.json`,
    `..._infra_equivalence.json`). checkpoint `par_enc.net.0.weight=(256,20)` 확인 완료.
-4. **v0.6 coverage 개선** — 현재 0.52로 목표 [0.62, 0.78] 미달.
-   calibration loss weight 상향(`calibration: 0.1→0.3`) 또는 더 큰 카탈로그(n=2000↑) 검토.
+4. **[진행 중] v0.7 coverage 개선** — `scripts/phase4_v0_7_round.py` 생성 완료 (2026-05-26).
+   변경: calibration weight `0.1 → 0.3`. 모델·데이터·optimizer 등 v0.6 완전 유지.
+   **Kaggle CUDA 재학습 필요** (아래 명령 참조). 결과 회수 후 coverage 확인.
+   기대: coverage [0.62, 0.78] 진입. r/RMSE는 소폭 하락 허용.
 5. **Phase 4 v1** — 더 큰 카탈로그(n↑), NFW offset 분포 도입, image_size 128 복귀 검토.
    Mode 2 nonzero target catalog 선행 필요 (현재 v0.4 mode2_dm_correction 전부 zero placeholder).
 6. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
