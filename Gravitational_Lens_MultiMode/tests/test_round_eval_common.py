@@ -53,6 +53,7 @@ def _loader():
         "lc_mask": torch.ones(3, 4, dtype=torch.bool),
         "params": torch.zeros(3, 20),
         "sigma_curve": torch.zeros(3, 1, 4),
+        "image": torch.zeros(3, 1, 64, 64),   # v0.6: I_obs zero tensor
         "target_mode": torch.ones(3, dtype=torch.long),
     }
     return [batch]

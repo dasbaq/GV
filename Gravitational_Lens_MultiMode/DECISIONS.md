@@ -4,6 +4,38 @@
 
 ---
 
+## [2026-05-25] v0.6 — Image 입력 (I_obs) Mode 1/2 전용 복구
+
+### 배경
+v0.5(Image 삭제) 재학습 결과 Mode 1 성능이 v0.4 대비 크게 저하됨:
+
+| 모델 | RMSE | r | 1σ coverage |
+|------|------|---|-------------|
+| v0.4 (image 있음) | 4.53 | 0.621 | 0.80 |
+| v0.5 (image 없음) | 5.57 | 0.234 | 0.62 |
+
+r 값이 0.621 → 0.234로 급락. image가 Mode 1 correction 예측에 유의미한 신호를 제공함이 확인됨.
+
+### 결정
+- **I_obs (관측 이미지, 1채널)를 복구**. S_approx (truth-adjacent) 미사용.
+- Mode 3 head는 삭제 유지 (source 복원 기능 제거 유지).
+- ImageEncoder (4-stage 2D CNN, 1→32→64→128→d_model) 복구.
+- Mode1Head `in_dim = d_model×3 = 384` (fused + h_lc + h_img) 복구.
+- Mode2Head는 `fused` only 유지 (image 미사용).
+- 새 round script: `scripts/phase4_v0_6_round.py`, checkpoint: `phase4_v0_6_imgres_best.pt`.
+
+### 근거
+1. I_obs는 렌즈 형태·상대 밝기·이미지 분리 등 H0 correction에 유의미한 물리 정보 포함.
+2. 실제 관측에서도 I_obs는 항상 취득 가능 (S_approx와 달리 truth-side 아님).
+3. v0.5 대비 모델 용량 차이(256→384 in_dim)만으로는 성능 차이를 설명하기 어려움 — 정보 손실이 주 원인.
+
+### 호환성 주의
+- v0.5 checkpoint (head1.net.0.weight shape [64,256]) ← v0.6 모델 (in_dim=384) 비호환.
+- v0.4 checkpoint (head1.net.0.weight shape [64,384]) ← in_dim은 같지만 img_enc 입력 채널이 다름 (v0.4: 2ch I_obs+S_approx, v0.6: 1ch I_obs). 로드 불가.
+- `test_v0_5_checkpoint_incompatible_with_v0_6_model` 테스트로 문서화.
+
+---
+
 ## [2026-05-25] Mode 3(Source 복원) + Image 입력 모달리티 삭제
 
 ### 사전 게이트 — Ablation 결과 기록

@@ -4,8 +4,10 @@ LensCorrectionDataset — HDF5 스트리밍 + Mode별 라벨 분기.
 한 샘플 = (system_id, approx_level, target_mode) triple.
 target_mode에 따라 사용하는 입력 모달리티와 라벨이 달라짐.
 
-입력 모달리티: LC + Param + Σ-curve (3-way 고정).
-Mode 3(Source 복원)과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
+입력 모달리티: LC + Param + Σ-curve + Image (4-way, v0.6).
+  - Image: I_obs 단일 채널 (H×W), 픽셀값 [0,1] 정규화.
+  - Mode 3(Source 복원) head는 삭제 유지 (DECISIONS.md [2026-05-25]).
+  - v0.6 변경: image 모달리티 복구 (I_obs only, S_approx 미사용).
 
 HDF5 접근: swmr=True, worker별 file handle 재오픈.
 Split: system 단위 80/10/10, seed 고정.
@@ -124,6 +126,7 @@ class LensCorrectionDataset(Dataset):
         param_norm: Optional[dict] = None,
         target_scaler: Optional[dict] = None,
         observed_feature_config: Optional[dict] = None,
+        image_size: int = 64,
         seed: int = 42,
     ) -> None:
         super().__init__()
@@ -137,6 +140,7 @@ class LensCorrectionDataset(Dataset):
         self.param_norm = param_norm or {}
         self.target_scaler = target_scaler or {}
         self.observed_feature_config = observed_feature_config or {}
+        self.image_size = image_size
         self.seed = seed
 
         self._index: List[Tuple[str, int, int, int]] = []  # (path, sys_idx, approx, mode)
@@ -205,6 +209,31 @@ class LensCorrectionDataset(Dataset):
             observed_feature_config=self.observed_feature_config,
             allow_legacy_delay_sigma=True,
         )
+
+        # --- 관측 이미지 (I_obs, v0.6) ---
+        img_size = self.image_size
+        if "images/I_obs" in f:
+            raw_img = np.array(f["images/I_obs"][sys_idx], dtype=np.float32)
+            # 크기 조정 (img_size×img_size로 리사이즈 없이 중앙 크롭 또는 패딩)
+            h, w = raw_img.shape[-2], raw_img.shape[-1]
+            if h != img_size or w != img_size:
+                # 필요 시 center-crop 또는 zero-pad
+                out_img = np.zeros((img_size, img_size), dtype=np.float32)
+                ch = min(h, img_size)
+                cw = min(w, img_size)
+                oh = (img_size - ch) // 2
+                ow = (img_size - cw) // 2
+                sh = (h - ch) // 2
+                sw = (w - cw) // 2
+                out_img[oh:oh+ch, ow:ow+cw] = raw_img[sh:sh+ch, sw:sw+cw]
+                raw_img = out_img
+            # [0, 1] 정규화 (픽셀값이 모두 0이면 그대로)
+            max_val = float(raw_img.max())
+            if max_val > 0:
+                raw_img = raw_img / max_val
+        else:
+            raw_img = np.zeros((img_size, img_size), dtype=np.float32)
+        image = raw_img[np.newaxis]  # [1, H, W]
 
         # --- Σ 곡선 ---
         if "sigma_curve" in f:
@@ -286,6 +315,7 @@ class LensCorrectionDataset(Dataset):
             "lc_mask":      lc_mask,
             "params":       torch.from_numpy(params_vec),
             "sigma_curve":  torch.from_numpy(sigma_curve[np.newaxis]),   # [1, S]
+            "image":        torch.from_numpy(image),                      # [1, H, W]
             "target":       torch.from_numpy(target),
             "target_dim":   target_dim,
             "target_mode":  target_mode,

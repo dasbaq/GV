@@ -8,7 +8,7 @@
 (단일 평면, κ_ext=0, smooth profile, isotropic). 이 모듈은 truth-side 키
 (dt_true, mu_true, kappa_ext 등)를 절대 읽지 않는다.
 
-Image 입력 모달리티는 삭제됨 (DECISIONS.md [2026-05-25] 참조).
+v0.6: Image 입력 (I_obs) 복구. 관측에서 이미지가 없으면 zero tensor 반환.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ def build_corrector_inputs(
     param_norm: Mapping[str, Any],
     max_len: int = 1024,
     sigma_curve_size: int = 512,
+    image_size: int = 64,
     approx_level: int = 1,
     target_mode: int = 1,
     observed_feature_config: Mapping[str, Any] | None = None,
@@ -91,11 +92,32 @@ def build_corrector_inputs(
     else:
         sigma_curve = _compute_sigma_curve_fallback(F_raw, n_valid, sigma_curve_size)
 
+    # --- 관측 이미지 (I_obs, v0.6) ---
+    if spec.get("I_obs") is not None:
+        raw_img = np.asarray(spec["I_obs"], dtype=np.float32)
+        if raw_img.ndim == 2:
+            h, w = raw_img.shape
+        else:
+            raw_img = raw_img.squeeze()
+            h, w = raw_img.shape
+        out_img = np.zeros((image_size, image_size), dtype=np.float32)
+        ch, cw = min(h, image_size), min(w, image_size)
+        oh, ow = (image_size - ch) // 2, (image_size - cw) // 2
+        sh, sw = (h - ch) // 2, (w - cw) // 2
+        out_img[oh:oh+ch, ow:ow+cw] = raw_img[sh:sh+ch, sw:sw+cw]
+        max_val = float(out_img.max())
+        if max_val > 0:
+            out_img /= max_val
+        image_arr = out_img[np.newaxis]  # [1, H, W]
+    else:
+        image_arr = np.zeros((1, image_size, image_size), dtype=np.float32)
+
     return {
         "lc": torch.from_numpy(lc).unsqueeze(0),
         "lc_mask": lc_mask.unsqueeze(0),
         "params": torch.from_numpy(params_vec).unsqueeze(0),
         "sigma_curve": torch.from_numpy(sigma_curve[np.newaxis]).unsqueeze(0),
+        "image": torch.from_numpy(image_arr).unsqueeze(0),               # [1,1,H,W]
         "target_mode": torch.tensor([int(target_mode)]),
     }
 
@@ -104,7 +126,7 @@ def system_spec_from_hdf5(path: str | Path, sys_idx: int = 0) -> dict[str, Any]:
     """Phase 4 HDF5 한 시스템에서 dataset가 읽는 inference-side 필드를 그대로 추출.
 
     self-consistency 테스트 및 HDF5-관측 추론용. truth-side 키는 읽지 않는다.
-    Image 필드(images/I_obs, approx_outputs/S_approx)는 삭제됨.
+    v0.6: I_obs 복구 (S_approx/S_true/images/psf 미포함).
     """
 
     import h5py
@@ -120,6 +142,11 @@ def system_spec_from_hdf5(path: str | Path, sys_idx: int = 0) -> dict[str, Any]:
             "sigma_curve": (
                 np.asarray(f["sigma_curve"][sys_idx], dtype=np.float32)
                 if "sigma_curve" in f
+                else None
+            ),
+            "I_obs": (
+                np.asarray(f["images/I_obs"][sys_idx], dtype=np.float32)
+                if "images/I_obs" in f
                 else None
             ),
         }

@@ -1,9 +1,10 @@
 """
-3종 입력 인코더.
+4종 입력 인코더.
 
 LightCurveEncoder   : [B, 2, T] + mask → [B, d_model]
 ParamEncoder        : [B, P]            → [B, d_model]
 SigmaCurveEncoder   : [B, 1, S]         → [B, d_model]
+ImageEncoder        : [B, 1, H, W]      → [B, d_model]  (I_obs 단일채널, v0.6 복구)
 """
 
 from __future__ import annotations
@@ -107,4 +108,70 @@ class SigmaCurveEncoder(nn.Module):
     def forward(self, sigma: torch.Tensor) -> torch.Tensor:
         x = self.conv(sigma)           # [B, d_model, S]
         x = self.pool(x).squeeze(-1)  # [B, d_model]
+        return self.drop(x)
+
+
+# --------------------------------------------------------------------------- #
+# ImageEncoder                                                                  #
+# --------------------------------------------------------------------------- #
+class _Conv2DStage(nn.Module):
+    """stride-1 2×Conv2d + BN + GELU + MaxPool2d(2)."""
+
+    def __init__(self, in_ch: int, out_ch: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU(),
+            nn.MaxPool2d(2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class ImageEncoder(nn.Module):
+    """관측 이미지 인코더 (v0.6 복구, Mode 3 없음).
+
+    입력  : [B, 1, H, W]  — I_obs 단일 채널 (H=W=image_size, 기본 64px)
+    출력  : [B, d_model]
+
+    단위 / 가정:
+        - 픽셀값 정규화: 호출 전 [0, 1] 범위 가정 (dataset에서 처리).
+        - SIE 표준 근사에서 얻은 관측 이미지. S_approx (truth-adjacent) 미사용.
+        - Mode 3(Source 복원) head 없음 — Mode 1/2 correction 전용.
+
+    아키텍처:
+        4-stage 2D CNN (enc1~enc4):
+          [B,1,64,64] → [B,32,32,32] → [B,64,16,16] → [B,128,8,8] → [B,d_model,4,4]
+        AdaptiveAvgPool2d(1) → Flatten → Dropout → [B, d_model]
+    """
+
+    def __init__(self, d_model: int = 128, dropout: float = 0.1) -> None:
+        super().__init__()
+        self.enc1 = _Conv2DStage(1, 32)
+        self.enc2 = _Conv2DStage(32, 64)
+        self.enc3 = _Conv2DStage(64, 128)
+        self.enc4 = _Conv2DStage(128, d_model)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        img : [B, 1, H, W]  — I_obs, 픽셀값 [0, 1]
+
+        Returns
+        -------
+        [B, d_model]
+        """
+        x = self.enc1(img)              # [B, 32, H/2, W/2]
+        x = self.enc2(x)               # [B, 64, H/4, W/4]
+        x = self.enc3(x)               # [B, 128, H/8, W/8]
+        x = self.enc4(x)               # [B, d_model, H/16, W/16]
+        x = self.pool(x).flatten(1)    # [B, d_model]
         return self.drop(x)

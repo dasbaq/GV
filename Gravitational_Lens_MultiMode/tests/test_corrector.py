@@ -1,6 +1,6 @@
 """
 MultiModalErrorCorrector — mixed-mode 배치 forward + backward 1-step.
-Mode 3(Source 복원)과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
+v0.6: Image 입력 (I_obs 1ch) 복구. Mode 3(Source 복원) 삭제 유지.
 """
 
 import sys
@@ -15,6 +15,7 @@ from ml.training.losses import composite_loss
 
 
 D = 128
+IMG_SIZE = 64
 
 
 @pytest.fixture(scope="module")
@@ -31,8 +32,8 @@ def model(cfg):
     return MultiModalErrorCorrector(model_cfg)
 
 
-def _make_batch(B=4, T=64, S=32, max_dm=4):
-    """mode 1·2 혼합 배치 생성."""
+def _make_batch(B=4, T=64, S=32, max_dm=4, img_size=IMG_SIZE):
+    """mode 1·2 혼합 배치 생성 (v0.6: image 포함)."""
     modes = torch.tensor([1, 1, 2, 2])
     with open(Path(__file__).parent.parent / "config" / "ml.yaml") as f:
         param_dim = len(yaml.safe_load(f)["data"]["param_normalization"]) + 5
@@ -40,13 +41,15 @@ def _make_batch(B=4, T=64, S=32, max_dm=4):
     lc_mask     = torch.ones(B, T, dtype=torch.bool)
     params      = torch.randn(B, param_dim)
     sigma_curve = torch.randn(B, 1, S)
+    image       = torch.rand(B, 1, img_size, img_size)   # [0,1] I_obs
 
     target      = torch.randn(B, max_dm + 2)
     target_dim  = torch.tensor([1, 1, 1, 1])
 
     return {
         "lc": lc, "lc_mask": lc_mask, "params": params,
-        "sigma_curve": sigma_curve, "target_mode": modes,
+        "sigma_curve": sigma_curve, "image": image,
+        "target_mode": modes,
         "target": target, "target_dim": target_dim,
     }
 
@@ -56,6 +59,7 @@ def test_forward_modes_1_2(model, cfg):
     out   = model(
         lc=batch["lc"], lc_mask=batch["lc_mask"],
         params=batch["params"], sigma_curve=batch["sigma_curve"],
+        image=batch["image"],
         target_mode=batch["target_mode"],
     )
     assert out["mode1"] is not None
@@ -67,6 +71,7 @@ def test_mode1_output_shape(model, cfg):
     out   = model(
         lc=batch["lc"], lc_mask=batch["lc_mask"],
         params=batch["params"], sigma_curve=batch["sigma_curve"],
+        image=batch["image"],
         target_mode=batch["target_mode"],
     )
     n1 = (batch["target_mode"] == 1).sum().item()
@@ -83,6 +88,7 @@ def test_backward_one_step(model, cfg):
     out  = model(
         lc=batch["lc"], lc_mask=batch["lc_mask"],
         params=batch["params"], sigma_curve=batch["sigma_curve"],
+        image=batch["image"],
         target_mode=batch["target_mode"],
     )
     ls   = composite_loss(out, batch, weights)
@@ -104,10 +110,11 @@ def test_mode_only_1_batch(model, cfg):
         "lc_mask":     torch.ones(B, 64, dtype=torch.bool),
         "params":      torch.randn(B, param_dim),
         "sigma_curve": torch.randn(B, 1, 32),
+        "image":       torch.rand(B, 1, IMG_SIZE, IMG_SIZE),
         "target_mode": torch.ones(B, dtype=torch.long),
     }
     out = model(**{k: batch[k] for k in
-                   ["lc", "lc_mask", "params", "sigma_curve", "target_mode"]})
+                   ["lc", "lc_mask", "params", "sigma_curve", "image", "target_mode"]})
     assert out["mode1"] is not None
     assert out["mode2"] is None
 
@@ -118,6 +125,7 @@ def test_log_sigma_clamp(model, cfg):
     out   = model(
         lc=batch["lc"], lc_mask=batch["lc_mask"],
         params=batch["params"], sigma_curve=batch["sigma_curve"],
+        image=batch["image"],
         target_mode=batch["target_mode"],
     )
     for mode_key in ["mode1", "mode2"]:

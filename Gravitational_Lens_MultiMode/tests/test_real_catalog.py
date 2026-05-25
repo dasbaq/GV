@@ -40,8 +40,11 @@ def test_load_yaml_catalog_and_build_mode1_features() -> None:
     )
     assert got["params"].shape[-1] == len(_param_norm()) + 5
     assert got["lc"].shape[1] == 2
-    # use_image deleted in v0.5 — key must not be present
-    assert "use_image" not in got, "use_image was deleted in v0.5"
+    # v0.6: image key restored (I_obs zero tensor when no image available)
+    assert "image" in got, "image key must be present in v0.6"
+    assert got["image"].shape[-2:] == (64, 64), f"expected 64×64 image, got {got['image'].shape}"
+    # use_image flag removed permanently
+    assert "use_image" not in got, "use_image was deleted and must not return"
     assert spec["pair_order"] == {"leading_image": "A", "trailing_image": "B"}
 
 

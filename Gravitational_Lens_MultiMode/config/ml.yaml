@@ -1,6 +1,7 @@
 data:
   max_lc_len: 1024
   sigma_curve_size: 512
+  image_size: 64          # I_obs 관측 이미지 크기 (v0.6 복구)
   approx_levels: [1, 2]
   modes: [1, 2]
   mode_sampling_weights: [1.0, 1.0]

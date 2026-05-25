@@ -143,6 +143,7 @@ def evaluate_mode1_h0_on_loader(
                 lc_mask=batch_d["lc_mask"],
                 params=batch_d["params"],
                 sigma_curve=batch_d["sigma_curve"],
+                image=batch_d["image"],
                 target_mode=batch_d["target_mode"].to(device),
             )
             pred_scaled = out["mode1"]["h0_correction"].detach().cpu().numpy()

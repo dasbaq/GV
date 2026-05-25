@@ -4,8 +4,10 @@ MultiModalErrorCorrector — 조립체.
 공유 인코더 + CrossAttentionFusion + Mode별 분기 헤드.
 target_mode에 따라 해당 head만 호출.
 
-입력 모달리티: LC + Param + Σ-curve (3-way 고정).
-Mode 3(Source 복원)과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
+입력 모달리티: LC + Param + Σ-curve + Image (4-way, v0.6).
+  - Image: I_obs 단일 채널 [B,1,H,W] — Mode 1 head 입력에만 추가.
+  - Mode 3(Source 복원) head는 삭제된 채 유지 (DECISIONS.md [2026-05-25]).
+  - v0.6 변경: img_enc 복구, Mode1Head in_dim=d_model×3 (fused+h_lc+h_img).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import torch
 import torch.nn as nn
 
 from ml.models.encoders import (
-    LightCurveEncoder, ParamEncoder, SigmaCurveEncoder,
+    LightCurveEncoder, ParamEncoder, SigmaCurveEncoder, ImageEncoder,
 )
 from ml.models.fusion import CrossAttentionFusion
 from ml.models.heads import Mode1Head, Mode2Head
@@ -42,10 +44,12 @@ class MultiModalErrorCorrector(nn.Module):
         self.lc_enc    = LightCurveEncoder(d_model, dropout)
         self.par_enc   = ParamEncoder(param_dim, d_model, dropout)
         self.sig_enc   = SigmaCurveEncoder(d_model, dropout)
+        self.img_enc   = ImageEncoder(d_model, dropout)   # v0.6: I_obs 복구
 
         self.fusion    = CrossAttentionFusion(d_model, n_heads, dropout)
 
-        self.head1     = Mode1Head(d_model, dropout, in_dim=d_model * 2)
+        # Mode1Head: fused + h_lc + h_img → d_model×3
+        self.head1     = Mode1Head(d_model, dropout, in_dim=d_model * 3)
         self.head2     = Mode2Head(d_model, max_dm, dropout)
 
     def forward(
@@ -54,6 +58,7 @@ class MultiModalErrorCorrector(nn.Module):
         lc_mask:     torch.Tensor,          # [B, T]
         params:      torch.Tensor,          # [B, P]
         sigma_curve: torch.Tensor,          # [B, 1, S]
+        image:       torch.Tensor,          # [B, 1, H, W]  I_obs
         target_mode: torch.Tensor,          # [B]  int 1/2
     ) -> dict:
         """
@@ -74,8 +79,9 @@ class MultiModalErrorCorrector(nn.Module):
         h_lc  = self.lc_enc(lc, lc_mask)       # [B, d_model]
         h_par = self.par_enc(params)             # [B, d_model]
         h_sig = self.sig_enc(sigma_curve)        # [B, d_model]
+        h_img = self.img_enc(image)              # [B, d_model]
 
-        # Fusion — 3-way 고정
+        # Fusion — 3-way (LC + Param + Σ) 고정, image는 head1 전용
         fused = self.fusion(h_lc, h_par, h_sig)  # [B, d_model]
 
         out: dict = {"mode1": None, "mode2": None, "fused": fused}
@@ -87,7 +93,8 @@ class MultiModalErrorCorrector(nn.Module):
             fused_sub = fused[mask]                    # [n_sub, d_model]
 
             if mode_id == 1:
-                head1_in = torch.cat([fused_sub, h_lc[mask]], dim=1)
+                # v0.6: fused + h_lc + h_img (d_model×3)
+                head1_in = torch.cat([fused_sub, h_lc[mask], h_img[mask]], dim=1)
                 out["mode1"] = self.head1(head1_in)
             elif mode_id == 2:
                 out["mode2"] = self.head2(fused_sub)

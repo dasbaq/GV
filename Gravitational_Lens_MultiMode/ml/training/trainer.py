@@ -98,6 +98,7 @@ class CorrectorTrainer:
                 lc_mask     = batch["lc_mask"],
                 params      = batch["params"],
                 sigma_curve = batch["sigma_curve"],
+                image       = batch["image"],
                 target_mode = batch["target_mode"].to(self.device),
             )
             if self.loss_weights.get("physics", 0.0) > 0.0:
@@ -270,6 +271,7 @@ class CorrectorTrainer:
                     lc_mask     = batch["lc_mask"],
                     params      = batch["params"],
                     sigma_curve = batch["sigma_curve"],
+                    image       = batch["image"],
                     target_mode = batch["target_mode"].to(self.device),
                 )
                 losses = composite_loss(pred, batch, self.loss_weights)

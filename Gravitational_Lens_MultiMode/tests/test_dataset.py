@@ -56,8 +56,11 @@ def test_item_shapes(mock_h5, norm_cfg):
     assert item["lc_mask"].shape   == (MAX_LC,)
     assert item["sigma_curve"].shape == (1, SIGMA_S)
     assert item["params"].ndim     == 1
-    # image / use_image / target_image 키는 존재하지 않음
-    assert "image" not in item
+    # v0.6: image 키 복구 (I_obs [1, H, W])
+    assert "image" in item, "image key must be present in v0.6"
+    assert item["image"].ndim == 3 and item["image"].shape[0] == 1, \
+        f"image must be [1, H, W], got {item['image'].shape}"
+    # use_image / target_image 키는 삭제됨
     assert "use_image" not in item
     assert "target_image" not in item
 

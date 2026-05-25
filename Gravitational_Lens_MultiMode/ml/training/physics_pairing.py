@@ -34,6 +34,7 @@ def add_paired_physics_predictions(
             lc_mask=batch["lc_mask"],
             params=batch["params"],
             sigma_curve=batch["sigma_curve"],
+            image=batch["image"],
             target_mode=target_mode_1,
         )
         out2 = model(
@@ -41,6 +42,7 @@ def add_paired_physics_predictions(
             lc_mask=batch["lc_mask"],
             params=batch["params"],
             sigma_curve=batch["sigma_curve"],
+            image=batch["image"],
             target_mode=target_mode_2,
         )
 
