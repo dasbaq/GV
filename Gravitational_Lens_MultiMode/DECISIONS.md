@@ -4,6 +4,31 @@
 
 ---
 
+## [2026-05-27] Mode 1 real-observation ingestion contract
+
+### 결정
+실제 관측 Mode 1 입력은 raw CSV/TSV/RDB를 직접 역산기에 넣지 않고,
+YAML manifest와 함께 observation HDF5로 변환한 뒤 `pipelines/run_mode1.py`로 실행한다.
+
+참조값(`dt_ref_days`, `H0_ref` 등)은 YAML/JSON sidecar에만 두며, HDF5에는 저장하지 않는다.
+
+### 운영 규칙
+- 광도곡선은 A/B 두 상의 공통 `t_obs` grid를 요구한다. grid가 다르면 ingestion 단계에서 reject한다.
+- magnitude 광도곡선은 선형 flux로 변환하고, `magerr`는 flux uncertainty로 전파한다.
+- manifest에는 관측 입력인 `image_positions` [arcsec], `z_lens`, `z_source`, column mapping만 둔다.
+- 실제 benchmark는 TDC1 Rung 0 Δt 추출기 검증을 먼저 실행하고, 그 다음 SDSS J1226-0006 E2E H0 검증을 실행한다.
+
+### 결정 근거
+Mode 1 adapter는 observation-side 입력만 읽도록 설계되어 있으므로, benchmark 참조값을 HDF5에 섞으면
+truth leakage와 입력 계약 혼동이 생긴다. raw 관측 포맷을 ingestion 계층에서 표준화하면
+COSMOGRAIL-style RDB와 일반 CSV/TSV를 같은 `ObservedLensSystem` 경로로 처리할 수 있다.
+
+### 관련 파일
+- `ml/data_adapters/observed_mode1.py`
+- `pipelines/ingest_observation.py`
+- `tests/benchmarks/test_tdc1.py`
+- `tests/benchmarks/test_sdss_j1226.py`
+
 ## [2026-05-27] Phase 4 v0.7 Mode 1 uncertainty calibration
 
 ### 결정

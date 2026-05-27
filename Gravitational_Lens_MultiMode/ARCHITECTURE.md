@@ -43,6 +43,25 @@ substructure, 다중 평면 효과 등)를 매번 numerically 풀면 너무 느�
 
 파이프라인 간 인터페이스: **HDF5 파일만 사용**
 
+### 실제 관측 Mode 1 ingestion
+
+raw 관측 파일은 바로 역산기에 넣지 않고, 먼저 observation HDF5로 정규화한다.
+
+```
+CSV/TSV/RDB light curves + YAML manifest + optional sidecar
+  → pipelines/ingest_observation.py
+  → data/observations/*_observed.h5
+  → pipelines/run_mode1.py
+```
+
+- light curve table은 A/B 두 상의 공통 `t_obs` grid를 가져야 한다.
+- magnitude 입력은 `F = 10^(-0.4 m)`로 선형 flux로 변환하고,
+  `sigma_F = 0.4 ln(10) F sigma_m`으로 오차를 전파한다.
+- manifest에는 `image_positions` [arcsec], `z_lens`, `z_source`, column mapping을 둔다.
+- 검증용 `dt_ref_days`, `H0_ref` 등은 sidecar와 ingestion report에만 두고,
+  Mode 1 입력 HDF5에는 저장하지 않는다.
+- 실제 benchmark 순서는 TDC1 Rung 0의 Δt 추출기 검증 후 SDSS J1226-0006 E2E H0 검증이다.
+
 ---
 
 ## 워크플로우 — M2 전처리 / Kaggle GPU 학습

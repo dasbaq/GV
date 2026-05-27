@@ -3,6 +3,34 @@
 
 ---
 
+## [2026-05-27] Mode 1 실제 관측 ingestion + benchmark wiring
+
+실제 원본 관측 파일은 아직 로컬에 없어 TDC1/SDSS real benchmark 판정은 skip이다.
+이번 검증은 raw 관측 ingestion 경로와 benchmark wiring의 synthetic smoke다.
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| observed ingestion unit/integration | `8 passed` | PASS |
+| TDC1 real benchmark hook | artifact 없음 | SKIP |
+| SDSS J1226 real benchmark hook | artifact 없음 | SKIP |
+| 기존 observation/run_mode1 회귀 | `18 passed` | PASS |
+
+검증 명령:
+- `pytest -q tests/test_observed_mode1_ingestion.py tests/benchmarks/test_tdc1.py::test_tdc1_rung0_real tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real`
+  → 8 passed, 2 skipped.
+- `pytest -q tests/test_observation_io.py tests/test_delay_extraction_obs.py tests/test_run_mode1_e2e.py tests/test_observed_mode1_ingestion.py`
+  → 18 passed.
+- `python -m py_compile ml/data_adapters/observed_mode1.py pipelines/ingest_observation.py tests/benchmarks/test_tdc1.py tests/benchmarks/test_sdss_j1226.py`
+  → pass.
+- `pytest -q tests/benchmarks/test_tdc1.py tests/benchmarks/test_sdss_j1226.py`
+  → 4 passed, 3 skipped.
+
+실제 파일 배치 규약:
+- TDC1 Rung 0: `data/observations/tdc1_rung0_observed.h5`,
+  `data/observations/tdc1_rung0_sidecar.yaml`, 선택 `tdc1_rung0_delay_config.json`.
+- SDSS J1226-0006: `data/observations/sdss_j1226_observed.h5`,
+  `data/observations/sdss_j1226_sidecar.yaml`, 선택 `sdss_j1226_delay_config.json`.
+
 ## [2026-05-27] Phase 4 v0.7 post-hoc sigma scaling diagnostic
 
 v0.7은 재훈련 없이 Mode 1 predicted sigma만 `1.47x` 스케일하는 uncertainty

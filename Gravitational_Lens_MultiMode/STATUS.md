@@ -92,6 +92,8 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [x] inversion/delay_extraction.py   — 실관측 포맷 광도곡선 → Δt_obs 추출
 [x] inversion/sie_fit.py            — 관측 상 위치 → SIE fit → Δφ 산출
 [x] inversion/mode1_h0.py          — H₀ 역산 솔버 단위/import 정합성 수정 (Δφ [rad²])
+[x] ml/data_adapters/observed_mode1.py — CSV/TSV/RDB + manifest → observation HDF5
+[x] pipelines/ingest_observation.py — raw 관측 입력 ingestion CLI + leak-free sidecar report
 [x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ JSON CLI
                                       + Mode 1 ML checkpoint/scaler inference hook
 [ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
@@ -126,8 +128,8 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 |---------|----------|------|-----------|
 | system 6 (Δt=24.14일) | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음, 실관측 포맷 synthetic Δt 오차 0.09일 | 2026-05-22 |
 | ZTF 노이즈 전체 통계 | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
-| SDSS J1226-0006 | Mode 1 출력 (H₀) | ⬜ 미실행 | — |
-| TDC1 Rung 0 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
+| SDSS J1226-0006 | Mode 1 출력 (H₀) | ⚠️ REAL 경로 연결, 원본 observation HDF5/sidecar 없음 → skip | 2026-05-27 |
+| TDC1 Rung 0 | Mode 1 출력 | ⚠️ REAL 경로 연결, 원본 observation HDF5/sidecar 없음 → skip | 2026-05-27 |
 | TDC1 Rung 1 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | (추가 예정) DM 회복 정확도 | Mode 2 | ⬜ 미실행 | — |
 | (추가 예정) Source 재구성 PSNR/SSIM | Mode 3 | ⬜ 미실행 | — |

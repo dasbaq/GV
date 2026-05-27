@@ -3,6 +3,21 @@
 
 ---
 
+## [2026-05-27] — Mode 1 실제 관측 ingestion 경로 추가
+- `ml/data_adapters/observed_mode1.py`: CSV/TSV/RDB 광도곡선 + YAML manifest를
+  Mode 1 observation HDF5로 변환하는 adapter 추가. magnitude 입력은 선형 flux로 변환하고
+  `magerr`를 flux uncertainty로 전파한다.
+- `pipelines/ingest_observation.py`: `--light-curves`, `--manifest`, 선택 `--sidecar`,
+  `--output` CLI 추가. sidecar의 `dt_ref_days`/`H0_ref` 계열 값은 HDF5에 쓰지 않고
+  별도 ingestion report JSON에만 기록한다.
+- `tests/benchmarks/test_tdc1.py`: `data/observations/tdc1_rung0_observed.h5`와
+  sidecar가 있으면 실제 Rung 0 Δt 추출 검증을 실행하도록 연결.
+- `tests/benchmarks/test_sdss_j1226.py`: `data/observations/sdss_j1226_observed.h5`와
+  sidecar가 있으면 `run_mode1` E2E H0 검증을 실행하도록 연결.
+- `tests/test_observed_mode1_ingestion.py`: magnitude→flux, RDB parsing, A/B time-grid reject,
+  manifest validation, CLI report leak 방지, TDC1-style Δt 추출, SDSS-style E2E smoke 테스트 추가.
+- 실제 원본 관측 파일은 아직 로컬에 없어 real benchmark는 skip 유지.
+
 ## [2026-05-27] — Phase 4 v0.7 post-hoc sigma scaling
 - `ml/inference/mode1.py`: Mode 1 관측 결과를 ML 입력 tensor로 변환하고,
   config/scaler/checkpoint 로드 → `MultiModalErrorCorrector` forward → H0 correction/sigma 산출 helper 추가.
