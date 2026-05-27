@@ -1,4 +1,4 @@
-"""Phase 4 v0.1 infrastructure equivalence, retrain, and bootstrap eval.
+"""Phase 4 v0.3.1 infrastructure equivalence, retrain, and bootstrap eval.
 
 This script keeps the v2.6 model, inputs, loss, optimizer, batch size, and AMP
 policy fixed.  Phase 4 labels use the HDF5 schema sign convention
@@ -44,19 +44,19 @@ from scripts.lib.round_common import (
     skipped_acceptance,
 )
 
-DATA_NAME = "phase4_v0_1.h5"
-UNFILTERED_DATA_NAME = "phase4_v0_1_eval_unfiltered.h5"
+DATA_NAME = "phase4_v0_3_1.h5"
+UNFILTERED_DATA_NAME = "phase4_v0_3_1_eval_unfiltered.h5"
 PATHS = build_round_paths(
     root=ROOT,
     data_name=DATA_NAME,
-    round_name="phase4_v0_1_round",
-    checkpoint_name="phase4_v0_1_imgres_best.pt",
-    history_name="phase4_v0_1_imgres_long_history.json",
-    eval_name="phase4_v0_1_imgres_h0_eval.json",
-    infra_name="phase4_v0_1_infra_equivalence.json",
-    scaler_name="target_scaler_phase4_v0_1.pkl",
+    round_name="phase4_v0_3_1_round",
+    checkpoint_name="phase4_v0_3_1_imgres_best.pt",
+    history_name="phase4_v0_3_1_imgres_long_history.json",
+    eval_name="phase4_v0_3_1_imgres_h0_eval.json",
+    infra_name="phase4_v0_3_1_infra_equivalence.json",
+    scaler_name="target_scaler_phase4_v0_3_1.pkl",
     unfiltered_name=UNFILTERED_DATA_NAME,
-    eval_unfiltered_name="phase4_v0_1_imgres_h0_eval_unfiltered.json",
+    eval_unfiltered_name="phase4_v0_3_1_imgres_h0_eval_unfiltered.json",
 )
 DATA = PATHS.data
 UNFILTERED_DATA = PATHS.unfiltered
@@ -67,7 +67,7 @@ EVAL = PATHS.eval
 EVAL_UNFILTERED = PATHS.eval_unfiltered
 INFRA = PATHS.infra
 RUNS = PATHS.runs
-EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_1_equivalence.json"
+EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_3_1_equivalence.json"
 
 ACCEPTANCE = {
     "cuda_forward_diff_max": 1.0e-4,
@@ -504,7 +504,7 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 
 
 def load_floor_analysis() -> dict | None:
-    path = ROOT / "data" / "logs" / "phase4_v0_1_floor_analysis.json"
+    path = ROOT / "data" / "logs" / "phase4_v0_3_1_floor_analysis.json"
     if not path.exists():
         return None
     with path.open() as f:
@@ -715,12 +715,12 @@ def environment_sanity(device: torch.device) -> dict:
 
 def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candidate: int) -> dict:
     RUNS.mkdir(parents=True, exist_ok=True)
-    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_3_1_temp.pkl", cfg["seed"])
     fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
     dist_workers = worker_candidate if target_device.type == "cuda" else 0
     dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
     result = {
-        "round": "phase4_v0_1",
+        "round": "phase4_v0_3_1",
         "phase": "equivalence",
         "device": environment_sanity(target_device),
         "forward_only": fwd,
@@ -889,7 +889,7 @@ def main() -> None:
         raise SystemExit("ParamEncoder input dim changed; leak trigger fired.")
 
     if args.phase == "all":
-        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_3_1_temp.pkl", cfg["seed"])
         fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
         infra["forward_only"] = fwd
         if not fwd["passed"]:

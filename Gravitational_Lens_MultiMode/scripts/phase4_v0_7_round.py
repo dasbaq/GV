@@ -1,8 +1,19 @@
-"""Phase 4 v0.1 infrastructure equivalence, retrain, and bootstrap eval.
+"""Phase 4 v0.7 재학습 라운드 — calibration weight 상향으로 coverage 개선.
 
-This script keeps the v2.6 model, inputs, loss, optimizer, batch size, and AMP
-policy fixed.  Phase 4 labels use the HDF5 schema sign convention
-``correction = true - approx``, so corrected H0 is ``H0_approx + correction``.
+v0.6 결과:
+  RMSE 5.258, r 0.503, coverage 0.52 (목표 [0.62, 0.78] 미달)
+  원인: calibration weight 0.1이 task loss 1.0 대비 너무 작아
+        NLL이 log_sigma를 충분히 학습하지 못함 → pred_sigma 과소추정(과신뢰).
+
+v0.7 핵심 변경:
+  - calibration loss weight: 0.1 → 0.3 (3배 상향)
+  - 모델 구조·데이터·optimizer·AMP·batch_size 등 모두 v0.6과 동일
+
+데이터·스케일러·승인 기준은 v0.4/v0.6와 동일.
+Kaggle Dataset: donghyun51/lens-phase4-v0-4 (재업로드 불필요)
+
+SIE 표준 근사 가정: 모든 역산은 SIE 단일 고정 근사 위에서 동작한다.
+Units: H0 and corrections [km/s/Mpc].
 """
 
 from __future__ import annotations
@@ -22,7 +33,6 @@ import numpy as np
 import torch
 import yaml
 from scipy import stats
-from scipy.stats import beta as beta_dist
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +41,12 @@ sys.path.insert(0, str(ROOT))
 from ml.models.error_corrector import MultiModalErrorCorrector
 from ml.training.dataset import LensCorrectionDataset
 from ml.training.losses import composite_loss
+from ml.training.physics_pairing import add_paired_physics_predictions
+from ml.training.round_eval import (
+    acceptance_report as shared_acceptance_report,
+    evaluate_mode1_h0_on_loader,
+    mode2_correction_availability,
+)
 from ml.utils.seed import set_seed
 from scripts.lib.round_common import (
     add_phase_args,
@@ -44,19 +60,20 @@ from scripts.lib.round_common import (
     skipped_acceptance,
 )
 
-DATA_NAME = "phase4_v0_1.h5"
-UNFILTERED_DATA_NAME = "phase4_v0_1_eval_unfiltered.h5"
+# v0.7도 v0.4 데이터를 그대로 사용 (재업로드 불필요)
+DATA_NAME = "phase4_v0_4.h5"
+UNFILTERED_DATA_NAME = "phase4_v0_4_eval_unfiltered.h5"
 PATHS = build_round_paths(
     root=ROOT,
     data_name=DATA_NAME,
-    round_name="phase4_v0_1_round",
-    checkpoint_name="phase4_v0_1_imgres_best.pt",
-    history_name="phase4_v0_1_imgres_long_history.json",
-    eval_name="phase4_v0_1_imgres_h0_eval.json",
-    infra_name="phase4_v0_1_infra_equivalence.json",
-    scaler_name="target_scaler_phase4_v0_1.pkl",
+    round_name="phase4_v0_7_round",
+    checkpoint_name="phase4_v0_7_imgres_best.pt",
+    history_name="phase4_v0_7_imgres_long_history.json",
+    eval_name="phase4_v0_7_imgres_h0_eval.json",
+    infra_name="phase4_v0_7_infra_equivalence.json",
+    scaler_name="target_scaler_phase4_v0_4.pkl",   # 스케일러는 v0.4와 공유
     unfiltered_name=UNFILTERED_DATA_NAME,
-    eval_unfiltered_name="phase4_v0_1_imgres_h0_eval_unfiltered.json",
+    eval_unfiltered_name="phase4_v0_7_imgres_h0_eval_unfiltered.json",
 )
 DATA = PATHS.data
 UNFILTERED_DATA = PATHS.unfiltered
@@ -67,25 +84,31 @@ EVAL = PATHS.eval
 EVAL_UNFILTERED = PATHS.eval_unfiltered
 INFRA = PATHS.infra
 RUNS = PATHS.runs
-EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_1_equivalence.json"
+EQUIVALENCE = PATHS.work_root / "logs" / "phase4_v0_7_equivalence.json"
 
+# 승인 기준: v0.4/v0.6와 동일 (데이터 분포가 같으므로 기준 유지)
+# 근거: data/logs/phase4_v0_4_floor_analysis.json,
+#       data/logs/phase4_v0_4_r_ceiling.json, DECISIONS.md [2026-05-25].
 ACCEPTANCE = {
     "cuda_forward_diff_max": 1.0e-4,
-    "filtered_rmse_ci_lower_min": 2.755,
-    "filtered_rmse_ci_upper_max": 4.862,
-    "filtered_rmse_point_band": [2.755, 6.570],
+    "filtered_rmse_ci_lower_min": 0.5,
+    "filtered_rmse_ci_upper_max": 11.08,
+    "filtered_rmse_point_band": [0.5, 16.62],
     "unfiltered_filtered_rmse_ratio_max": 2.5,
     "coverage_ci_overlap": [0.62, 0.78],
     "positive_fraction_min": 0.95,
-    "filtered_h0_r_min": 0.85,
+    "filtered_h0_r_min": 0.19,
     "best_val_m1": "record_only",
 }
 
 LEAK_TRIGGERS = {
-    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 2.755,
+    "filtered_rmse_ci_upper_below_nfw_oracle_lower": 0.5,
     "unfiltered_filtered_rmse_ratio_max": 3.18,
     "param_encoder_input_dim": 20,
 }
+
+# v0.7 핵심 변경: calibration weight
+_CALIBRATION_WEIGHT_V07 = 0.3   # v0.6: 0.1
 
 
 def display_path(path: Path) -> str:
@@ -97,6 +120,9 @@ def load_cfg(epochs: int | None = None) -> dict:
         cfg = yaml.safe_load(f)
     cfg["training"]["epochs"] = 50 if epochs is None else int(epochs)
     cfg["training"]["early_stop_patience"] = 8
+    # v0.7 핵심 변경: calibration weight 0.1 → 0.3
+    # 근거: v0.6 coverage 0.52 < 목표 [0.62,0.78]. pred_sigma 과소추정(과신뢰) 해소.
+    cfg["training"]["loss_weights"]["calibration"] = _CALIBRATION_WEIGHT_V07
     return cfg
 
 
@@ -109,7 +135,6 @@ def build_model(cfg: dict) -> MultiModalErrorCorrector:
             f"ParamEncoder input dim changed: {model_cfg['param_in_dim']} "
             f"!= {LEAK_TRIGGERS['param_encoder_input_dim']}"
         )
-    model_cfg["image_size"] = cfg["data"]["image_size"]
     return MultiModalErrorCorrector(model_cfg)
 
 
@@ -122,7 +147,7 @@ def build_dataset(cfg: dict, split: str, modes: list[int], approx_levels: list[i
         approx_levels=tuple(approx_levels),
         max_len=cfg["data"]["max_lc_len"],
         sigma_curve_size=cfg["data"]["sigma_curve_size"],
-        image_size=cfg["data"]["image_size"],
+        image_size=cfg["data"].get("image_size", 64),
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"],
         target_scaler=scaler,
@@ -142,7 +167,7 @@ def build_loader(cfg: dict, split: str, modes: list[int], approx_levels: list[in
         train=train,
     )
     if train:
-        w_map = {1: 1.0, 2: 1.0, 3: 1.0}
+        w_map = {1: 1.0, 2: 1.0}
         weights = torch.tensor([w_map[e[3]] for e in ds._index], dtype=torch.float)
         gen = torch.Generator()
         gen.manual_seed(seed)
@@ -186,14 +211,12 @@ def create_target_scaler(path: Path, out_path: Path, seed: int) -> dict:
     ids = split_system_ids(path, "train", seed)
     with h5py.File(path, "r") as f:
         mode1 = np.asarray(f["simplification_errors/mode1_H0_error"][:], dtype=np.float32)[ids]
-        mode3 = np.asarray(f["simplification_errors/mode3_source_residual"][:], dtype=np.float32)[ids]
     scaler = {
         "mode1": {"mean": float(mode1.mean()), "scale": float(mode1.std() + 1.0e-8)},
         "mode2": {
             "mean": np.zeros(4, dtype=np.float32),
             "scale": np.ones(4, dtype=np.float32),
         },
-        "mode3": {"mean": float(mode3.mean()), "scale": float(mode3.std() + 1.0e-8)},
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
@@ -214,6 +237,7 @@ def move_batch(batch: dict, device: torch.device) -> dict:
 
 
 def run_forward(model: torch.nn.Module, batch: dict, device: torch.device) -> dict[str, np.ndarray]:
+    """v0.7: v0.6와 동일 (image I_obs 포함)."""
     model.eval().to(device)
     batch = move_batch(batch, device)
     with torch.no_grad():
@@ -223,7 +247,6 @@ def run_forward(model: torch.nn.Module, batch: dict, device: torch.device) -> di
             params=batch["params"],
             sigma_curve=batch["sigma_curve"],
             image=batch["image"],
-            use_image=batch["use_image"].to(device),
             target_mode=batch["target_mode"].to(device),
         )
     arrays: dict[str, np.ndarray] = {}
@@ -233,8 +256,6 @@ def run_forward(model: torch.nn.Module, batch: dict, device: torch.device) -> di
     if out["mode2"] is not None:
         arrays["mode2_pred"] = out["mode2"]["dm_correction"].detach().cpu().numpy()
         arrays["log_sigma_mode2"] = out["mode2"]["log_sigma"].detach().cpu().numpy()
-    if out["mode3"] is not None:
-        arrays["mode3_pred"] = out["mode3"]["source_residual"].detach().cpu().numpy()
     return arrays
 
 
@@ -244,7 +265,7 @@ def forward_equivalence(cfg: dict, scaler: dict, target_device_name: str) -> dic
     target_device = select_device(target_device_name)
     if target_device.type == "cpu":
         raise RuntimeError("Forward equivalence needs a non-CPU target device.")
-    loader = build_loader(cfg, "val", [1, 2, 3], [1, 2], scaler, 42, 0, cpu, False, batch_size=6)
+    loader = build_loader(cfg, "val", [1, 2], [1, 2], scaler, 42, 0, cpu, False, batch_size=6)
     batch = next(iter(loader))
     model_cpu = build_model(cfg)
     state = copy.deepcopy(model_cpu.state_dict())
@@ -270,8 +291,8 @@ def train_one(cfg: dict, seed: int, device_name: str, workers: int,
     set_seed(seed)
     device = select_device(device_name)
     model = build_model(cfg).to(device)
-    train_loader = build_loader(cfg, "train", [1, 2, 3], [1, 2], scaler, seed, workers, device, True)
-    val_loader = build_loader(cfg, "val", [1, 2, 3], [1, 2], scaler, seed, workers, device, False)
+    train_loader = build_loader(cfg, "train", [1, 2], [1, 2], scaler, seed, workers, device, True)
+    val_loader = build_loader(cfg, "val", [1, 2], [1, 2], scaler, seed, workers, device, False)
     opt = torch.optim.AdamW(
         model.parameters(),
         lr=cfg["training"]["lr"],
@@ -377,9 +398,12 @@ def run_epoch(model: torch.nn.Module, loader: DataLoader, opt, scaler_amp, cfg: 
                     params=batch["params"],
                     sigma_curve=batch["sigma_curve"],
                     image=batch["image"],
-                    use_image=batch["use_image"].to(device),
                     target_mode=batch["target_mode"].to(device),
                 )
+                if cfg["training"]["loss_weights"].get("physics", 0.0) > 0.0:
+                    pred = add_paired_physics_predictions(
+                        model, pred, batch, use_amp=use_amp
+                    )
                 losses = composite_loss(pred, batch, cfg["training"]["loss_weights"])
             if not torch.isfinite(losses["total"]):
                 nan_batches.append(batch_idx)
@@ -489,30 +513,12 @@ def speed_table(cfg: dict, scaler: dict, target_device_name: str,
     }
 
 
-def rmse(x: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(np.square(x))))
-
-
-def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    residual = y_pred - y_true
-    return {
-        "MAE": float(np.mean(np.abs(residual))),
-        "RMSE": rmse(residual),
-        "bias": float(np.mean(residual)),
-        "r": float(np.corrcoef(y_true, y_pred)[0, 1]),
-    }
-
-
 def load_floor_analysis() -> dict | None:
-    path = ROOT / "data" / "logs" / "phase4_v0_1_floor_analysis.json"
+    path = ROOT / "data" / "logs" / "phase4_v0_4_floor_analysis.json"
     if not path.exists():
         return None
     with path.open() as f:
         return json.load(f)
-
-
-def ci_overlap(a: list[float], b: list[float]) -> bool:
-    return max(a[0], b[0]) <= min(a[1], b[1])
 
 
 def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
@@ -524,136 +530,24 @@ def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
     model = build_model(cfg).to(device)
     model.load_state_dict(torch.load(CKPT, map_location=device))
     loader = build_eval_loader_for_ids(cfg, path, ids, scaler, workers, device)
-    pred_corr = []
-    pred_sigma = []
-    with torch.no_grad():
-        for batch in loader:
-            batch_d = move_batch(batch, device)
-            out = model(
-                lc=batch_d["lc"],
-                lc_mask=batch_d["lc_mask"],
-                params=batch_d["params"],
-                sigma_curve=batch_d["sigma_curve"],
-                image=batch_d["image"],
-                use_image=batch_d["use_image"].to(device),
-                target_mode=batch_d["target_mode"].to(device),
-            )
-            pred_scaled = out["mode1"]["h0_correction"].detach().cpu().numpy()
-            logsig_scaled = out["mode1"]["log_sigma"].detach().cpu().numpy()
-            pred_corr.append(pred_scaled * scaler["mode1"]["scale"] + scaler["mode1"]["mean"])
-            pred_sigma.append(np.exp(logsig_scaled) * scaler["mode1"]["scale"])
-    pred_corr = np.concatenate(pred_corr).astype(np.float64)
-    pred_sigma = np.concatenate(pred_sigma).astype(np.float64)
-    with h5py.File(path, "r") as f:
-        y_true = np.asarray(f["true_values/H0_true"][:], dtype=np.float64)[ids]
-        h0_approx = np.asarray(f["approx_outputs/H0_approx"][:], dtype=np.float64)[ids]
-        h0_all = np.asarray(f["true_values/H0_true"][:], dtype=np.float64)
-        true_corr = np.asarray(f["correction_targets/mode1_H0_correction"][:], dtype=np.float64)[ids]
-    model_h0 = h0_approx + pred_corr
-    no_corr = h0_approx
-    joint_oracle = y_true
-    residual = model_h0 - y_true
-    z = residual / pred_sigma
-    coverage = np.abs(z) <= 1.0
-    rng = np.random.default_rng(20260504)
-    boot = {"model_RMSE": [], "model_r": [], "coverage": []}
-    n = len(y_true)
-    for _ in range(bootstrap_n):
-        b = rng.integers(0, n, n)
-        boot["model_RMSE"].append(rmse(model_h0[b] - y_true[b]))
-        boot["model_r"].append(float(np.corrcoef(y_true[b], model_h0[b])[0, 1]))
-        boot["coverage"].append(float(np.mean(coverage[b])))
-    boot_ci = {
-        k: {
-            "mean": None if len(v) == 0 else float(np.mean(v)),
-            "ci95": None if len(v) == 0 else [float(x) for x in np.percentile(v, [2.5, 97.5])],
-        }
-        for k, v in boot.items()
-    }
-    k = int(coverage.sum())
-    coverage_ci = [
-        0.0 if k == 0 else float(beta_dist.ppf(0.025, k, n - k + 1)),
-        1.0 if k == n else float(beta_dist.ppf(0.975, k + 1, n - k)),
-    ]
-    q_levels = stats.norm.cdf(np.asarray([-3, -2, -1, 0, 1, 2, 3], dtype=np.float64))
-    qq = [
-        {
-            "normal_quantile": int(q),
-            "residual_over_pred_sigma_quantile": float(v),
-        }
-        for q, v in zip([-3, -2, -1, 0, 1, 2, 3], np.quantile(z, q_levels))
-    ]
-    ks = stats.kstest(h0_all, "uniform", args=(60.0, 20.0))
-    pred_positive = pred_corr > 0.0
-    result = {
-        "eval_set": label,
-        "training": training_summary,
-        "infrastructure": infra,
-        "best_checkpoint": display_path(CKPT),
-        "data": display_path(path),
-        "scaler": display_path(SCALER),
-        "phase4_floor_analysis": load_floor_analysis(),
-        "best": {
-            "mode1": {
-                "val_m1_scaled_MSE": float(np.mean(((pred_corr - true_corr) / scaler["mode1"]["scale"]) ** 2)),
-                "correction_prediction": {
-                    "mean": float(pred_corr.mean()),
-                    "std": float(pred_corr.std()),
-                    "min": float(pred_corr.min()),
-                    "max": float(pred_corr.max()),
-                    "positive_fraction": float(np.mean(pred_positive)),
-                },
-                "h0": {
-                    "model": metrics(y_true, model_h0),
-                    "no_correction": metrics(y_true, no_corr),
-                    "perfect_joint_oracle": metrics(y_true, joint_oracle),
-                    "target_sign_note": "Phase 4 HDF5 correction = H0_true - H0_approx, so corrected H0 is H0_approx + model_output.",
-                },
-                "log_sigma_calibration": {
-                    "coverage_abs_residual_le_1sigma": float(np.mean(coverage)),
-                    "coverage_abs_residual_le_1sigma_ci95_clopper_pearson": coverage_ci,
-                    "coverage_abs_residual_le_2sigma": float(np.mean(np.abs(z) <= 2.0)),
-                    "outlier_rate_abs_residual_gt_2sigma": float(np.mean(np.abs(z) > 2.0)),
-                    "outlier_rate_abs_residual_gt_3sigma": float(np.mean(np.abs(z) > 3.0)),
-                    "predicted_sigma_physical": {
-                        "mean": float(pred_sigma.mean()),
-                        "std": float(pred_sigma.std()),
-                        "min": float(pred_sigma.min()),
-                        "max": float(pred_sigma.max()),
-                    },
-                    "abs_residual_over_pred_sigma": {
-                        "mean": float(np.mean(np.abs(z))),
-                        "std": float(np.std(np.abs(z))),
-                        "min": float(np.min(np.abs(z))),
-                        "max": float(np.max(np.abs(z))),
-                    },
-                },
-            }
-        },
-        "bootstrap": {
-            "n": bootstrap_n,
-            "model_RMSE": boot_ci["model_RMSE"],
-            "model_r": boot_ci["model_r"],
-            "coverage_1sigma_resample": boot_ci["coverage"],
-            "coverage_1sigma_clopper_pearson": {
-                "count": k,
-                "n": n,
-                "point": float(np.mean(coverage)),
-                "ci95": coverage_ci,
-            },
-        },
-        "distribution_checks": {
-            "qq_residual_over_pred_sigma": qq,
-            "val_H0_true_KS_against_U_60_80": {
-                "statistic": float(ks.statistic),
-                "pvalue": float(ks.pvalue),
-            },
-        },
-    }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
-    return result
+    return evaluate_mode1_h0_on_loader(
+        model=model,
+        loader=loader,
+        device=device,
+        path=path,
+        ids=ids,
+        scaler=scaler,
+        bootstrap_n=bootstrap_n,
+        output_path=output_path,
+        label=label,
+        training_summary=training_summary,
+        infra=infra,
+        checkpoint_display=display_path(CKPT),
+        data_display=display_path(path),
+        scaler_display=display_path(SCALER),
+        phase4_floor_analysis=load_floor_analysis(),
+        move_batch=move_batch,
+    )
 
 
 def evaluate_model(cfg: dict, scaler: dict, training_summary: dict,
@@ -694,6 +588,9 @@ def environment_sanity(device: torch.device) -> dict:
         "cuda_device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
         "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "nvidia_smi": None,
+        "model_version": "v0.7",
+        "mode1_head_in_dim": 384,        # d_model×3 (v0.6/v0.7 공통)
+        "calibration_weight": _CALIBRATION_WEIGHT_V07,  # v0.7 핵심 변경
     }
     try:
         proc = subprocess.run(
@@ -715,12 +612,12 @@ def environment_sanity(device: torch.device) -> dict:
 
 def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candidate: int) -> dict:
     RUNS.mkdir(parents=True, exist_ok=True)
-    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+    temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_7_temp.pkl", cfg["seed"])
     fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
     dist_workers = worker_candidate if target_device.type == "cuda" else 0
     dist = distribution_equivalence(cfg, temp_scaler, target_device.type, dist_workers)
     result = {
-        "round": "phase4_v0_1",
+        "round": "phase4_v0_7",
         "phase": "equivalence",
         "device": environment_sanity(target_device),
         "forward_only": fwd,
@@ -736,113 +633,23 @@ def run_equivalence_phase(cfg: dict, target_device: torch.device, worker_candida
     return result
 
 
-def _metric(result: dict) -> dict:
-    m = result["best"]["mode1"]["h0"]["model"]
-    cal = result["best"]["mode1"]["log_sigma_calibration"]
-    return {
-        "rmse": float(m["RMSE"]),
-        "rmse_ci": result["bootstrap"]["model_RMSE"]["ci95"],
-        "r": float(m["r"]),
-        "coverage": float(cal["coverage_abs_residual_le_1sigma"]),
-        "coverage_ci": cal["coverage_abs_residual_le_1sigma_ci95_clopper_pearson"],
-        "positive_fraction": float(result["best"]["mode1"]["correction_prediction"]["positive_fraction"]),
-    }
-
-
 def acceptance_report(filtered: dict, unfiltered: dict, infra: dict,
                       training_summary: dict) -> dict:
-    fm = _metric(filtered)
-    um = _metric(unfiltered)
-    ratio = float(um["rmse"] / fm["rmse"]) if fm["rmse"] > 0 else float("inf")
-    fwd = infra.get("forward_only") or infra.get("equivalence_handoff", {}).get("forward_only", {})
-    max_diff = max(fwd.get("diffs", {"missing": float("inf")}).values())
-    coverage_target = ACCEPTANCE["coverage_ci_overlap"]
-    pass_rows = [
-        {
-            "metric": "Kaggle CUDA forward diff (CPU vs CUDA)",
-            "value": max_diff,
-            "pass": bool(max_diff <= ACCEPTANCE["cuda_forward_diff_max"]),
-            "criterion": f"<= {ACCEPTANCE['cuda_forward_diff_max']}",
-        },
-        {
-            "metric": "filtered eval model RMSE 95% CI lower",
-            "value": None if fm["rmse_ci"] is None else fm["rmse_ci"][0],
-            "pass": bool(fm["rmse_ci"] is not None and fm["rmse_ci"][0] > ACCEPTANCE["filtered_rmse_ci_lower_min"]),
-            "criterion": f"> {ACCEPTANCE['filtered_rmse_ci_lower_min']}",
-        },
-        {
-            "metric": "filtered eval model RMSE 95% CI upper",
-            "value": None if fm["rmse_ci"] is None else fm["rmse_ci"][1],
-            "pass": bool(fm["rmse_ci"] is not None and fm["rmse_ci"][1] < ACCEPTANCE["filtered_rmse_ci_upper_max"]),
-            "criterion": f"< {ACCEPTANCE['filtered_rmse_ci_upper_max']}",
-        },
-        {
-            "metric": "filtered eval model RMSE point estimate",
-            "value": fm["rmse"],
-            "pass": bool(ACCEPTANCE["filtered_rmse_point_band"][0] <= fm["rmse"] <= ACCEPTANCE["filtered_rmse_point_band"][1]),
-            "criterion": f"inside {ACCEPTANCE['filtered_rmse_point_band']}",
-        },
-        {
-            "metric": "unfiltered/filtered RMSE ratio",
-            "value": ratio,
-            "pass": bool(ratio <= ACCEPTANCE["unfiltered_filtered_rmse_ratio_max"]),
-            "criterion": f"<= {ACCEPTANCE['unfiltered_filtered_rmse_ratio_max']}",
-        },
-        {
-            "metric": "1sigma coverage CI",
-            "value": fm["coverage_ci"],
-            "pass": bool(ci_overlap(fm["coverage_ci"], coverage_target)),
-            "criterion": f"overlap {coverage_target}",
-        },
-        {
-            "metric": "sign of correction predictions (filtered)",
-            "value": fm["positive_fraction"],
-            "pass": bool(fm["positive_fraction"] >= ACCEPTANCE["positive_fraction_min"]),
-            "criterion": f">= {ACCEPTANCE['positive_fraction_min']}",
-        },
-        {
-            "metric": "sign of correction predictions (unfiltered)",
-            "value": um["positive_fraction"],
-            "pass": bool(um["positive_fraction"] >= ACCEPTANCE["positive_fraction_min"]),
-            "criterion": f">= {ACCEPTANCE['positive_fraction_min']}",
-        },
-        {
-            "metric": "H0 r (model H0 vs true H0, filtered)",
-            "value": fm["r"],
-            "pass": bool(fm["r"] >= ACCEPTANCE["filtered_h0_r_min"]),
-            "criterion": f">= {ACCEPTANCE['filtered_h0_r_min']}",
-        },
-        {
-            "metric": "best val_m1",
-            "value": training_summary["best_val_m1"],
-            "pass": None,
-            "criterion": "record only",
-        },
-    ]
-    leak_triggers = {
-        "filtered_rmse_ci_upper_below_nfw_oracle_lower": bool(
-            fm["rmse_ci"] is not None
-            and fm["rmse_ci"][1] < LEAK_TRIGGERS["filtered_rmse_ci_upper_below_nfw_oracle_lower"]
-        ),
-        "unfiltered_rmse_ratio_gt_3p18": bool(ratio > LEAK_TRIGGERS["unfiltered_filtered_rmse_ratio_max"]),
-        "param_encoder_input_dim_changed": bool(
-            LEAK_TRIGGERS["param_encoder_input_dim"] != len(load_cfg()["data"]["param_normalization"]) + 5
-        ),
-    }
-    return {
-        "acceptance": ACCEPTANCE,
-        "pass_rows": pass_rows,
-        "all_pass_excluding_record_only": all(r["pass"] is not False for r in pass_rows),
-        "filtered_metrics": fm,
-        "unfiltered_metrics": um,
-        "unfiltered_filtered_rmse_ratio": ratio,
-        "leak_triggers": leak_triggers,
-        "leak_triggered": any(leak_triggers.values()),
-    }
+    return shared_acceptance_report(
+        filtered=filtered,
+        unfiltered=unfiltered,
+        infra=infra,
+        training_summary=training_summary,
+        acceptance=ACCEPTANCE,
+        leak_triggers_config=LEAK_TRIGGERS,
+        param_encoder_input_dim=len(load_cfg()["data"]["param_normalization"]) + 5,
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Phase 4 v0.7 round (calibration weight 0.1→0.3 for coverage)"
+    )
     add_phase_args(parser)
     parser.add_argument("--bootstrap-n", type=int, default=1000)
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
@@ -851,9 +658,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=None,
                         help="Full retrain/eval workers override. CUDA default is 4.")
     parser.add_argument("--worker-candidate", type=int, default=None,
-                        help="Accelerator worker count for distribution equivalence. Default follows device.")
+                        help="Accelerator worker count for distribution equivalence.")
     parser.add_argument("--epochs", type=int, default=None,
-                        help="Full retrain epoch override; default keeps v2.6 value 50.")
+                        help="Full retrain epoch override; default 50.")
     args = parser.parse_args()
     cfg = load_cfg(args.epochs)
     target_device = select_device(args.device)
@@ -876,12 +683,20 @@ def main() -> None:
 
     infra = {
         "environment_sanity": environment_sanity(target_device),
+        "model_version": "v0.7",
         "data": display_path(DATA),
         "unfiltered_eval_data": display_path(unfiltered_path),
         "equivalence_handoff": load_equivalence_payload(args.equivalence_from),
         "param_encoder_input_dim": len(cfg["data"]["param_normalization"]) + 5,
         "acceptance_predeclared": ACCEPTANCE,
         "leak_triggers_predeclared": LEAK_TRIGGERS,
+        "mode2_correction_availability": mode2_correction_availability(DATA),
+        "v0_7_changes": {
+            "calibration_weight": f"{_CALIBRATION_WEIGHT_V07} (v0.6: 0.1, 3x 상향)",
+            "rationale": "v0.6 coverage 0.52 < target [0.62,0.78]. NLL weight 증가로 pred_sigma 과소추정 해소.",
+            "model_version": "v0.6와 동일 (mode1_head_in_dim=384, image_modality=I_obs_1ch)",
+            "data": "v0.4와 동일 (phase4_v0_4.h5, 20-dim observed_features)",
+        },
     }
     if infra["param_encoder_input_dim"] != LEAK_TRIGGERS["param_encoder_input_dim"]:
         with open(INFRA, "w") as f:
@@ -889,7 +704,7 @@ def main() -> None:
         raise SystemExit("ParamEncoder input dim changed; leak trigger fired.")
 
     if args.phase == "all":
-        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_1_temp.pkl", cfg["seed"])
+        temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_7_temp.pkl", cfg["seed"])
         fwd = forward_equivalence(cfg, temp_scaler, target_device.type)
         infra["forward_only"] = fwd
         if not fwd["passed"]:
@@ -919,7 +734,10 @@ def main() -> None:
         patience=cfg["training"]["early_stop_patience"],
     )
     training_summary = {
+        "round": "phase4_v0_7",
+        "model_version": "v0.7",
         "criterion": "val.mode1_task",
+        "calibration_weight": _CALIBRATION_WEIGHT_V07,
         "ended_epoch": full["ended_epoch"],
         "early_stop_epoch": full["ended_epoch"] if full["ended_epoch"] < cfg["training"]["epochs"] else None,
         "best_epoch": full["best_epoch"],
@@ -961,6 +779,7 @@ def main() -> None:
         print(json.dumps({"infra": infra, "training": training_summary, "acceptance": report}, indent=2))
         raise SystemExit("Leak trigger fired; stopping before any tuning.")
     print(json.dumps({
+        "round": "phase4_v0_7",
         "infra": display_path(INFRA),
         "training": training_summary,
         "filtered_eval": display_path(EVAL),

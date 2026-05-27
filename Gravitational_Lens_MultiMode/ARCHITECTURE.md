@@ -8,7 +8,7 @@
 미분해 광도곡선에서 시간 지연 추출 →
 유효 굴절률 기반 중력렌즈 시뮬레이션 (다양한 H₀, 암흑물질 분포) →
 10만 개 가상 데이터 생성 →
-세 가지 역산 Mode (H₀ / DM 분포 / Source 복원) 수행 →
+두 가지 역산 Mode (H₀ / DM 분포) 수행 →
 **표준 근사** 적용 + 멀티모달 ML로 근사 오차 보정
 
 핵심 아이디어: 실제 우주의 복잡한 구조(불규칙한 은하 질량 분포, 확장된 광원,
@@ -35,13 +35,25 @@ substructure, 다중 평면 효과 등)를 매번 numerically 풀면 너무 느�
 ④ Mode별 역산 (Inversion)
    Mode 1: 관측 Δt + 렌즈 모델 → H₀
    Mode 2: 관측 (Δt, 상의 위치, μ) → DM 질량 분포 파라미터
-   Mode 3: 아인슈타인 링/다중상 이미지 → 원본 source 이미지 복원
+   Mode 3: 🗑️ 삭제됨 (v0.5, DECISIONS.md [2026-05-25])
 
 ⑤ ML 오차 보정
    각 Mode 출력 → 보정된 출력 (full numerical 추정치)
 ```
 
-파이프라인 간 인터페이스: **HDF5 파일만 사용**
+파이프라인 간 정식 학습/평가 인터페이스: **HDF5 파일 사용**.
+실관측 1단계 ingest는 사람이 관리하는 **YAML 리스트**를 허용한다. YAML은
+Gaia GraL X 메타데이터와 외부 Bag+22 결과(`dt_lc`, `dt_lc_sigma`, 광곡선 품질 지표)를
+담는 entry 포맷이며, 코드 내부에서는 공통 feature schema로 변환되어 HDF5 dataset 경로와
+같은 ParamEncoder 입력 순서를 사용한다. Bag+22 raw 추출과 ZTF 다운로드는 이 ingest
+adapter의 책임이 아니다.
+
+실관측/시뮬레이션 공통 ParamEncoder 입력 정책은 `config/ml.yaml:data.observed_features`와
+`data.param_normalization`이 단일 source of truth다. Δt 저장은 `|Δt|` 양수만 허용하고,
+음수 YAML 입력은 configured policy로 pair order를 뒤집어 메타데이터 로그에 남긴다. 시뮬레이션
+`sigma_dt` proxy는 config의 `relative_then_clip` sampler에서 생성하며, 광곡선 품질 지표는
+config의 `transform`(기본 log)과 min/max 범위로 정규화한다. 누락 가능한 렌즈 scalar는
+normalized-zero sentinel과 field별 missing flag로 표현한다.
 
 ### 실제 관측 Mode 1 ingestion
 
@@ -103,15 +115,15 @@ Kaggle train/eval을 분리하며, smoke run은 acceptance/leak 판정을 건너
 
 ---
 
-## 세 가지 역산 Mode
+## 두 가지 역산 Mode
 
 | Mode | 입력 | 출력 | 상태 |
 |------|------|------|------|
-| **Mode 1** | Δt_obs, 렌즈 모델, (z_L, z_S) | **H₀** [km/s/Mpc] | 구현 예정 |
-| **Mode 2** | Δt_obs, 상의 위치 θ_i, magnification μ_i, (z_L, z_S, H₀) | **DM 분포 파라미터** | 구현 예정 |
-| **Mode 3** | 다중상/아인슈타인 링 이미지 I_obs(x, y) | **복원된 source 이미지** S(x, y) | **구현 완료** |
+| **Mode 1** | Δt_obs, 렌즈 모델, (z_L, z_S) | **H₀** [km/s/Mpc] | ✅ 구현 완료 |
+| **Mode 2** | Δt_obs, 상의 위치 θ_i, magnification μ_i, (z_L, z_S, H₀) | **DM 분포 파라미터** | ✅ 구현 완료 |
+| ~~Mode 3~~ | ~~I_obs(x, y)~~ | ~~source S(x, y)~~ | 🗑️ **삭제됨** (v0.5, DECISIONS.md [2026-05-25]) |
 
-모든 Mode는 표준 근사 위에서 동작한다. ML 보정은 Mode별로 별도의
+Mode 1/2는 표준 근사 위에서 동작한다. ML 보정은 Mode별로 별도의
 head를 가지며 인코더는 공유한다.
 
 ---
@@ -131,7 +143,7 @@ head를 가지며 인코더는 공유한다.
 | Substructure | sub-halo, dark satellites 포함 | **평활화** (smooth mass profile) |
 | 렌즈 평면 | 다중 평면 | **단일 평면** |
 | 속도 분산 | anisotropic | **isotropic** (β = 0) |
-| 광원 | (Mode 3에 한해 의미 있음) | **extended** (Sérsic 또는 pixelated) |
+| 광원 | (Mode 3 삭제됨 — 해당 없음) | (해당 없음) |
 
 ### 왜 SIE 인가
 
@@ -227,11 +239,7 @@ Mode 2 (DM 분포 역산):
     p* = argmin_p Σ ‖observable_i - model_i(p)‖²
   prior: H₀, z_L, z_S 고정.
 
-Mode 3 (Source 복원):
-  렌즈 방정식  β = θ - α(θ)  의 역방향 매핑.
-  S* = argmin_S ‖I_obs - L · S‖² + λ · R(S)
-  L: SIE 기반 lensing operator, R: regularization.
-  현재 구현은 semi-linear inversion 기반.
+Mode 3 (Source 복원): 🗑️ 삭제됨 (v0.5, DECISIONS.md [2026-05-25])
 ```
 
 ---
@@ -260,10 +268,24 @@ simulation_YYYYMMDD_HHMMSS.h5
 │   ├── t_obs       [days]
 │   └── n_epochs    (int)
 │
-├── images/                      # [n_systems, H, W]   ← Mode 3용
-│   ├── I_obs                    # 관측(렌즈된) 이미지
-│   ├── S_true                   # ground-truth source (full_numerical)
-│   ├── psf                      # PSF 커널
+├── observed_features/           # [n_systems] inference-side scalar inputs
+│   ├── dt_lc                   # 외부/합성 Bag+22 primary-pair Δt [days]
+│   ├── dt_lc_sigma             # σ_Δt [days]
+│   ├── n_epochs_quality
+│   ├── baseline_days
+│   ├── median_cadence_days
+│   └── median_photometric_error
+│
+├── light_curve_quality/         # observed_features 품질 지표 alias
+│   ├── n_epochs_quality
+│   ├── baseline_days
+│   ├── median_cadence_days
+│   └── median_photometric_error
+│
+├── images/                      # [n_systems, H, W]   ← 데이터 생성 코드가 여전히 저장
+│   ├── I_obs                    # (학습 코드는 읽지 않음 — v0.5에서 Mode 3 삭제됨)
+│   ├── S_true
+│   ├── psf
 │   └── pixel_scale [arcsec/pix]
 │
 ├── true_values/                 # [n_systems]   ← Mode 1 / 2 라벨 (full_numerical 기반)
@@ -282,13 +304,50 @@ simulation_YYYYMMDD_HHMMSS.h5
 │   ├── dt_approx               # SIE 가정 하의 Δt
 │   ├── H0_approx               # Mode 1 SIE 역산 결과
 │   ├── dm_params_approx        # Mode 2 결과
-│   └── S_approx [n_systems, H, W]   # Mode 3 결과
+│   └── S_approx [n_systems, H, W]   # Mode 3 결과 — 학습 코드는 읽지 않음 (v0.5)
 │
 └── correction_targets/          # ML 훈련 라벨 = true - approx
     ├── mode1_H0_correction      [km/s/Mpc]
     ├── mode2_dm_correction      [vlen vector]
-    └── mode3_source_correction  [n_systems, H, W]
+    └── mode3_source_correction  [n_systems, H, W]   ← 데이터 생성만; 학습 코드는 읽지 않음 (v0.5)
 ```
+
+### 실관측 YAML ingest schema
+
+실관측 1단계 카탈로그는 top-level YAML list이며 entry마다 다음 nested dict를 사용한다.
+
+```
+- name: <system id>
+  sources: {...}
+  redshifts: {z_lens: ..., z_source: ...}
+  kinematics: {sigma_v: null | <km/s>}       # 누락 가능
+  lens_model:
+    H0_approx: null | <km/s/Mpc>
+    theta_E: null | <arcsec>                 # 누락 가능
+    q: null | <axis ratio>                   # 누락 가능
+    dphi_rad2: null | <rad^2>
+  time_delay:
+    dt_lc: <days>                            # 필수
+    dt_lc_sigma: <days>                      # 필수
+    image_pair_convention: brightest_pair_positive_delay
+  light_curve_quality:
+    N_epochs: ...
+    baseline_days: ...
+    median_cadence_days: ...
+    median_photometric_error: ...
+  mode2_inputs:                              # 1단계에서는 보존만 함
+    image_positions: null
+    all_pair_delays: null
+    flux_ratios: null
+    magnifications: null
+    is_lens_probability: null
+```
+
+`dt_lc`는 현재 시뮬레이션 규약과 맞춰 primary pair의 양수 시간지연으로 둔다.
+시뮬레이션 primary pair는 magnification이 큰 두 상(`theta_1`, `theta_2`)이다.
+`sigma_v`, `theta_E`, `q`는 실측에서 정상적으로 누락될 수 있으며 ParamEncoder에는
+normalized-zero sentinel과 missing flag(`missing_sigma_v`, `missing_theta_E`, `missing_q`)로 들어간다.
+`M200`, `concentration`, `kappa_ext`, `nfw_offset` 같은 truth-only 키는 YAML ingest에서 거부한다.
 
 학습 데이터 생성: 동일한 (H₀, z_L, z_S, …) 시스템을 두 번 풀이 —
 한 번은 full numerical (truth), 한 번은 SIE 표준 근사. 차이를 `correction_targets/`에 저장.
@@ -319,7 +378,7 @@ simulation_YYYYMMDD_HHMMSS.h5
     truth image separation `>= 0.1 arcsec`, `H0_approx in [45, 90]`,
     `dphi_sie / dphi_truth in [0.5, 1.5]`를 요구한다.
   - Mode 2 correction은 정식 solver 전까지 zeros 유지.
-  - Mode 3 correction은 source-plane `S_true - S_approx`만 저장한다.
+  - Mode 3 correction(`S_true - S_approx`)은 데이터 생성 코드에서만 저장; 학습 코드는 읽지 않음 (v0.5).
   - v2.* ML 호환을 위해 `simplification_errors/` alias도 저장하지만,
     부호는 Phase 4 schema와 동일한 `true - approx`이다.
 
@@ -337,7 +396,7 @@ c_nfw:     [3, 15]
 q:         [0.6, 1.0]              # SIE 축비
 SF_inf:    [0.1, 0.5]  mag         # DRW 진폭
 tau_drw:   [100, 1000] days        # DRW 시간 스케일
-image_size: 128                    # Mode 3용 픽셀 수 (정사각)
+image_size: 128                    # HDF5 데이터 생성용 (학습 코드는 읽지 않음, v0.5)
 pixel_scale: 0.05                  # arcsec/pix
 ```
 
@@ -351,40 +410,52 @@ pixel_scale: 0.05                  # arcsec/pix
 조건부 입력(축 one-hot)은 사용하지 않는다.
 
 ```
-입력 모달리티 (공통)
+입력 모달리티 (공통, v0.5 이후 3종 고정)
   ① 광도곡선 시계열   → 1D CNN  (가변 길이, 패딩/마스킹)
   ② 물리 파라미터    → MLP
        - min-max 정규화된 (H0_approx, z_L, z_S, sigma_v, q, ...)
        - 표준 근사로 풀어 얻은 결과(`approx_outputs/`)도 피처에 포함
-  ③ Σ(Δt_try, μ_try) 곡선 → 2D CNN  (Δt × μ 그리드)
-  ④ 관측 이미지 I_obs → 2D CNN  (Mode 3 활성 시에만 사용)
+  ③ Σ(Δt_try, μ_try) 곡선 → 1D CNN  (피크 주변 단면)
+  ④ 관측 이미지 I_obs: 🗑️ 삭제됨 (v0.5, DECISIONS.md [2026-05-25])
 
-융합: Cross-attention (3-way 또는 4-way, mode_id에 따라 분기)
+융합: 3-way Cross-attention 고정 (LC + Param + Σ-curve)
+  fused = CrossAttentionFusion(h_lc, h_params, h_sigma).mean(dim=1)
 
 Mode별 헤드 (target_mode 입력으로 선택)
-  ┌──────────────────────────────────────────────┐
-  │ Mode 1 head: MLP → (H0_correction, log_σ)    │  scalar
-  │ Mode 2 head: MLP → (dm_correction[K], log_σ) │  vector
-  │ Mode 3 head: U-Net 디코더 → S_correction[H,W] │  2D residual
-  └──────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ Mode 1 head: MLP(in_dim=d_model×2) → (H0_correction, log_σ)     │  scalar
+  │              in = cat([fused, h_lc])  — d_model×3 아님 (v0.5 변경) │
+  │ Mode 2 head: MLP → (dm_correction[K], log_σ)                    │  vector
+  │ Mode 3 head: 🗑️ 삭제됨 (v0.5)                                    │
+  └──────────────────────────────────────────────────────────────────┘
 
-손실:
-  L = Σ_modes [ L_task(mode) + λ_phys · L_physics(mode) + λ_unc · L_calibration(mode) ]
+손실 (v0.5):
+  L = Σ_{mode∈{1,2}} [ L_task(mode) + λ_phys · L_physics(mode) + λ_unc · L_calibration(mode) ]
+  (mode3_task, ssim 항목 삭제됨)
 
 훈련 전략:
-  - 단일 모델로 모든 Mode를 multi-task 학습
+  - 단일 모델로 Mode 1/2를 multi-task 학습
   - 표준 근사가 고정이라 모든 학습 샘플이 동일한 오차 분포에서 추출됨 → 학습 효율 ↑
   - 추론 시 target_mode를 받아 해당 head만 활성화
+  - v0.4 checkpoint는 Mode1Head in_dim=384(d_model×3)로 v0.5(256)와 비호환 → 재학습 필요
 ```
 
 ---
 
-## Mode 3 — 기존 구현 통합 노트
+## Mode 3 — 삭제 이력
 
-Mode 3 (source 복원)는 별도로 구현되어 있다. ML 보정은 다음과 같이 통합:
+> **v0.5 (2026-05-25)**: Mode 3(Source 복원)과 Image 입력 모달리티가 삭제됨.
+> 상세 근거와 삭제 전 ablation 기록은 DECISIONS.md [2026-05-25] 참조.
 
-1. 기존 Mode 3 솔버를 표준 근사(SIE) 기반 lensing operator로 호출 → `S_approx` 생성.
-2. 시뮬레이션 데이터에서는 `S_true` (full numerical로 동일 시스템을 다시 풀어 얻음)가
-   알려져 있으므로 학습 라벨 = `S_true - S_approx`.
-3. ML 모델은 잔차 이미지를 예측, 추론 시 `S_corrected = S_approx + S_residual_pred`.
-4. 기존 Mode 3 코드는 **수정 금지**. 호출 wrapper만 `inversion/mode3_wrapper.py`에 둔다.
+삭제된 구성 요소:
+- `ml/models/encoders.py`: `ImageEncoder`, `_Conv2DBlock` 클래스
+- `ml/models/heads.py`: `Mode3Head`, `_UpBlock` 클래스
+- `ml/models/fusion.py`: 4-way 분기 경로 (image 포함)
+- `ml/training/losses.py`: `_ssim_loss`, `mode3_task` 항목
+- `ml/training/dataset.py`: `image`, `use_image`, `target_image` 키
+- `inversion/mode3_wrapper.py`: 파일 전체 삭제
+- `config/ml.yaml`: `image_size`, `image_backbone`, `mode3`/`ssim` loss weight
+
+데이터 생성 코드(`ml/data/error_catalog.py`)는 기존 HDF5의 `images/` 그룹과
+`simplification_errors/mode3_source_residual`을 계속 저장하지만,
+학습 코드는 이를 읽지 않는다 (후방 호환 HDF5 스키마 보존).

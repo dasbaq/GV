@@ -25,6 +25,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from ml.training.losses import composite_loss
+from ml.training.physics_pairing import add_paired_physics_predictions
+from ml.training.round_eval import evaluate_mode1_h0_on_loader
 
 
 class CorrectorTrainer:
@@ -49,6 +51,7 @@ class CorrectorTrainer:
         self.patience       = t_cfg.get("early_stop_patience", 10)
         self.loss_weights   = t_cfg.get("loss_weights", {})
         self.use_amp        = t_cfg.get("amp", True) and device.type == "cuda"
+        self.best_metric    = t_cfg.get("best_metric", "total")
 
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -89,11 +92,6 @@ class CorrectorTrainer:
     def _step(self, batch: dict, train: bool) -> dict:
         batch = self._to_device(batch)
 
-        use_image = batch["use_image"]
-        if isinstance(use_image, (list, tuple)):
-            use_image = torch.tensor(use_image, dtype=torch.bool)
-        use_img_t = use_image.to(self.device)
-
         with autocast("cuda", enabled=self.use_amp):
             pred = self.model(
                 lc          = batch["lc"],
@@ -101,9 +99,12 @@ class CorrectorTrainer:
                 params      = batch["params"],
                 sigma_curve = batch["sigma_curve"],
                 image       = batch["image"],
-                use_image   = use_img_t,
                 target_mode = batch["target_mode"].to(self.device),
             )
+            if self.loss_weights.get("physics", 0.0) > 0.0:
+                pred = add_paired_physics_predictions(
+                    self.model, pred, batch, use_amp=self.use_amp
+                )
             losses = composite_loss(pred, batch, self.loss_weights)
 
         if train:
@@ -169,8 +170,9 @@ class CorrectorTrainer:
                   f"lr={self.optimizer.param_groups[0]['lr']:.2e}  "
                   f"({elapsed:.1f}s)")
 
-            if vl["total"] < best_val:
-                best_val   = vl["total"]
+            criterion = vl.get(self.best_metric, vl["total"])
+            if criterion < best_val:
+                best_val   = criterion
                 best_state = copy.deepcopy(self.model.state_dict())
                 torch.save(best_state, run_dir / "best.pt")
                 no_improve = 0
@@ -198,7 +200,7 @@ class CorrectorTrainer:
         """실측 데이터 fine-tune.  freeze_encoders=True → 인코더 파라미터 고정."""
         if freeze_encoders:
             for name, param in self.model.named_parameters():
-                if any(enc in name for enc in ("lc_enc", "par_enc", "sig_enc", "img_enc")):
+                if any(enc in name for enc in ("lc_enc", "par_enc", "sig_enc")):
                     param.requires_grad_(False)
             # 옵티마이저 재생성 (학습 파라미터만)
             self.optimizer = torch.optim.AdamW(
@@ -212,19 +214,57 @@ class CorrectorTrainer:
     # ------------------------------------------------------------------ #
     # evaluate                                                             #
     # ------------------------------------------------------------------ #
-    def evaluate(self, test_loader: DataLoader) -> dict:
-        """mode별 metric 분리 보고."""
+    def evaluate(
+        self,
+        test_loader: DataLoader,
+        *,
+        h5_path: Path | None = None,
+        ids=None,
+        target_scaler: dict | None = None,
+        output_path: Path | None = None,
+        label: str = "eval",
+        training_summary: dict | None = None,
+        infra: dict | None = None,
+        checkpoint_display: str = "",
+        data_display: str | None = None,
+        scaler_display: str = "",
+        phase4_floor_analysis: dict | None = None,
+        bootstrap_n: int = 1000,
+    ) -> dict:
+        """mode별 metric 분리 보고 또는 공용 Mode 1 round 평가.
+
+        If ``h5_path``, ``ids`` and ``target_scaler`` are provided this delegates
+        to ``ml.training.round_eval`` so trainer path A and round path B use the
+        same target-scaler inversion, H0 metric, coverage, and bootstrap code.
+        """
+        if h5_path is not None and ids is not None and target_scaler is not None:
+            return evaluate_mode1_h0_on_loader(
+                model=self.model,
+                loader=test_loader,
+                device=self.device,
+                path=Path(h5_path),
+                ids=ids,
+                scaler=target_scaler,
+                bootstrap_n=bootstrap_n,
+                output_path=output_path,
+                label=label,
+                training_summary=training_summary or {},
+                infra=infra or {},
+                checkpoint_display=checkpoint_display,
+                data_display=data_display or str(h5_path),
+                scaler_display=scaler_display,
+                phase4_floor_analysis=phase4_floor_analysis,
+                move_batch=lambda batch, device: self._to_device(batch),
+            )
+
         self.model.eval()
         agg: dict = {}
-        n_mode: dict = {1: 0, 2: 0, 3: 0}
-        per_mode: dict = {1: {}, 2: {}, 3: {}}
+        n_mode: dict = {1: 0, 2: 0}
+        per_mode: dict = {1: {}, 2: {}}
 
         with torch.no_grad():
             for batch in test_loader:
                 batch = self._to_device(batch)
-                use_img = batch["use_image"]
-                if isinstance(use_img, (list, tuple)):
-                    use_img = torch.tensor(use_img, dtype=torch.bool)
 
                 pred = self.model(
                     lc          = batch["lc"],
@@ -232,7 +272,6 @@ class CorrectorTrainer:
                     params      = batch["params"],
                     sigma_curve = batch["sigma_curve"],
                     image       = batch["image"],
-                    use_image   = use_img.to(self.device),
                     target_mode = batch["target_mode"].to(self.device),
                 )
                 losses = composite_loss(pred, batch, self.loss_weights)
@@ -241,7 +280,7 @@ class CorrectorTrainer:
 
                 # mode별 MSE 계산
                 tm = batch["target_mode"]
-                for mode_id in [1, 2, 3]:
+                for mode_id in [1, 2]:
                     m = (tm == mode_id)
                     if not m.any():
                         continue
@@ -256,17 +295,11 @@ class CorrectorTrainer:
                             if torch.is_tensor(losses["mode2_task"])
                             else losses["mode2_task"]
                         )
-                    if mode_id == 3 and pred["mode3"]:
-                        per_mode[3]["mse"] = per_mode[3].get("mse", 0.0) + (
-                            losses["mode3_task"].item()
-                            if torch.is_tensor(losses["mode3_task"])
-                            else losses["mode3_task"]
-                        )
 
         n_batches = max(len(test_loader), 1)
         result = {k: v / n_batches for k, v in agg.items()}
         result["per_mode"] = {}
-        for mode_id in [1, 2, 3]:
+        for mode_id in [1, 2]:
             if n_mode[mode_id] > 0:
                 result["per_mode"][f"mode{mode_id}_mse"] = (
                     per_mode[mode_id].get("mse", 0.0) / n_batches

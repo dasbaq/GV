@@ -11,6 +11,7 @@ data/logs/
 data/runs/
 data/cached_dataset.pt
 data/test_samples/
+data/kaggle_upload/
 src_py/ml/data/outputs/
 
 Gravitational_Lens_MultiMode/data/mock/

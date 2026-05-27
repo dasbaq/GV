@@ -1,5 +1,6 @@
 """
 CorrectorTrainer — toy 64샘플 1 epoch, 모든 mode loss 감소 확인.
+Mode 3과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
 """
 
 import sys
@@ -17,7 +18,6 @@ from ml.training.trainer import CorrectorTrainer
 from ml.utils.mock_generator import create_mock_h5
 
 N_SYS = 64
-IMG   = 32
 MAX_LC = 128
 SIGMA_S = 64
 
@@ -34,23 +34,21 @@ def cfg():
     c["training"]["amp"] = False
     c["data"]["max_lc_len"]       = MAX_LC
     c["data"]["sigma_curve_size"] = SIGMA_S
-    c["data"]["image_size"]       = IMG
     return c
 
 
 @pytest.fixture(scope="module")
 def mock_h5(tmp_path_factory):
     p = tmp_path_factory.mktemp("h5") / "mock.h5"
-    create_mock_h5(str(p), n_systems=N_SYS, image_size=IMG,
-                   max_epochs=MAX_LC, seed=1)
+    create_mock_h5(str(p), n_systems=N_SYS, max_epochs=MAX_LC, seed=1)
     return p
 
 
 @pytest.fixture(scope="module")
 def loaders(mock_h5, cfg):
     kwargs = dict(
-        h5_paths=[mock_h5], modes=[1, 2, 3], approx_levels=[1],
-        max_len=MAX_LC, sigma_curve_size=SIGMA_S, image_size=IMG,
+        h5_paths=[mock_h5], modes=[1, 2], approx_levels=[1],
+        max_len=MAX_LC, sigma_curve_size=SIGMA_S,
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"], seed=42,
     )
@@ -65,7 +63,6 @@ def loaders(mock_h5, cfg):
 def model(cfg):
     model_cfg = dict(cfg["model"])
     model_cfg["param_in_dim"] = len(cfg["data"]["param_normalization"]) + 5
-    model_cfg["image_size"]   = IMG
     return MultiModalErrorCorrector(model_cfg)
 
 

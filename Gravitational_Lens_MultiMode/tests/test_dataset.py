@@ -3,6 +3,8 @@ LensCorrectionDataset 단위 테스트.
 - shape / mask 정합성
 - mode별 라벨 정확도
 - split 누수 없음
+
+Mode 3과 Image 입력은 삭제됨 (DECISIONS.md [2026-05-25] 참조).
 """
 
 import sys
@@ -17,7 +19,6 @@ from ml.utils.mock_generator import create_mock_h5
 from ml.training.dataset import LensCorrectionDataset, build_weighted_sampler
 
 N_SYS = 64
-IMG   = 32
 MAX_LC = 128
 SIGMA_S = 64
 
@@ -25,8 +26,7 @@ SIGMA_S = 64
 @pytest.fixture(scope="module")
 def mock_h5(tmp_path_factory):
     p = tmp_path_factory.mktemp("h5") / "mock.h5"
-    create_mock_h5(str(p), n_systems=N_SYS, image_size=IMG,
-                   max_epochs=MAX_LC, seed=0)
+    create_mock_h5(str(p), n_systems=N_SYS, max_epochs=MAX_LC, seed=0)
     return p
 
 
@@ -37,12 +37,12 @@ def norm_cfg():
         return yaml.safe_load(f)["data"]["param_normalization"]
 
 
-def _make_ds(mock_h5, norm_cfg, split, modes=(1, 2, 3)):
+def _make_ds(mock_h5, norm_cfg, split, modes=(1, 2)):
     return LensCorrectionDataset(
         h5_paths=[mock_h5], split=split,
         modes=modes, approx_levels=[1, 2],
         max_len=MAX_LC, sigma_curve_size=SIGMA_S,
-        image_size=IMG, mode2_max_dm_dim=4,
+        mode2_max_dm_dim=4,
         param_norm=norm_cfg, seed=42,
     )
 
@@ -55,9 +55,14 @@ def test_item_shapes(mock_h5, norm_cfg):
     assert item["lc"].shape        == (2, MAX_LC)
     assert item["lc_mask"].shape   == (MAX_LC,)
     assert item["sigma_curve"].shape == (1, SIGMA_S)
-    assert item["image"].shape     == (1, IMG, IMG)
-    assert item["target_image"].shape == (IMG, IMG)
     assert item["params"].ndim     == 1
+    # v0.6: image 키 복구 (I_obs [1, H, W])
+    assert "image" in item, "image key must be present in v0.6"
+    assert item["image"].ndim == 3 and item["image"].shape[0] == 1, \
+        f"image must be [1, H, W], got {item['image'].shape}"
+    # use_image / target_image 키는 삭제됨
+    assert "use_image" not in item
+    assert "target_image" not in item
 
 
 def test_lc_mask_valid_range(mock_h5, norm_cfg):
@@ -96,22 +101,6 @@ def test_mode2_label_padding(mock_h5, norm_cfg):
     assert (item["target"][dm_dim:] == 0).all()
 
 
-def test_mode3_label_is_image(mock_h5, norm_cfg):
-    ds = _make_ds(mock_h5, norm_cfg, "train", modes=[3])
-    item = ds[0]
-    assert item["target_mode"]   == 3
-    assert item["target_dim"]    == 0
-    assert item["use_image"]     == True
-    assert item["target_image"].shape == (IMG, IMG)
-
-
-def test_mode3_image_nonzero(mock_h5, norm_cfg):
-    """Mode 3에서 image 입력이 실제 값을 가짐."""
-    ds = _make_ds(mock_h5, norm_cfg, "train", modes=[3])
-    item = ds[0]
-    assert item["image"].abs().sum().item() > 0
-
-
 # ---- split 누수 없음 ----
 def test_no_split_leak(mock_h5, norm_cfg):
     train_ds = _make_ds(mock_h5, norm_cfg, "train", modes=[1])
@@ -138,5 +127,5 @@ def test_split_size(mock_h5, norm_cfg):
 # ---- WeightedRandomSampler ----
 def test_weighted_sampler(mock_h5, norm_cfg):
     ds      = _make_ds(mock_h5, norm_cfg, "train")
-    sampler = build_weighted_sampler(ds, mode_weights=[2.0, 1.0, 1.0])
+    sampler = build_weighted_sampler(ds, mode_weights=[2.0, 1.0])
     assert len(sampler) == len(ds)

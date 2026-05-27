@@ -56,10 +56,9 @@ def _resolve_paths(pattern: str) -> list[Path]:
 
 def _build_model(cfg: dict) -> MultiModalErrorCorrector:
     param_norm = cfg["data"]["param_normalization"]
-    param_in_dim = len(param_norm) + 5  # 6 물리 + 2 approx + 3 mode
+    param_in_dim = len(param_norm) + 5  # scalar feature schema + 2 approx + 3 mode
     model_cfg = dict(cfg["model"])
     model_cfg["param_in_dim"] = param_in_dim
-    model_cfg["image_size"]   = cfg["data"]["image_size"]
     return MultiModalErrorCorrector(model_cfg)
 
 
@@ -92,10 +91,10 @@ def _build_loaders(h5_paths: list[Path], cfg: dict,
         approx_levels=data_cfg["approx_levels"],
         max_len=data_cfg["max_lc_len"],
         sigma_curve_size=data_cfg["sigma_curve_size"],
-        image_size=data_cfg["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=data_cfg["param_normalization"],
         target_scaler=target_scaler,
+        observed_feature_config=data_cfg.get("observed_features", {}),
         seed=cfg["seed"],
     )
     val_ds = LensCorrectionDataset(
@@ -104,10 +103,10 @@ def _build_loaders(h5_paths: list[Path], cfg: dict,
         approx_levels=data_cfg["approx_levels"],
         max_len=data_cfg["max_lc_len"],
         sigma_curve_size=data_cfg["sigma_curve_size"],
-        image_size=data_cfg["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=data_cfg["param_normalization"],
         target_scaler=target_scaler,
+        observed_feature_config=data_cfg.get("observed_features", {}),
         seed=cfg["seed"],
     )
 
@@ -132,7 +131,6 @@ def _ensure_mock(cfg: dict) -> list[Path]:
         create_mock_h5(
             out_path=mock_path,
             n_systems=1024,
-            image_size=cfg["data"]["image_size"],
             max_epochs=cfg["data"]["max_lc_len"],
             mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
             seed=cfg["seed"],
@@ -151,7 +149,6 @@ def _load_target_scaler(path: str | None) -> dict | None:
 def _apply_mode1_only(cfg: dict) -> None:
     weights = cfg["training"].setdefault("loss_weights", {})
     weights["mode2"] = 0.0
-    weights["mode3"] = 0.0
     weights["physics"] = 0.0
 
 
@@ -172,7 +169,7 @@ def stage_pretrain(args: argparse.Namespace, cfg: dict) -> None:
     if not h5_paths:
         h5_paths = _ensure_mock(cfg)
 
-    modes = [int(m) for m in args.modes.split(",")] if args.modes else [1, 2, 3]
+    modes = [int(m) for m in args.modes.split(",")] if args.modes else [1, 2]
 
     target_scaler = _load_target_scaler(args.target_scaler)
     train_loader, val_loader = _build_loaders(
@@ -238,7 +235,6 @@ def stage_finetune(args: argparse.Namespace, cfg: dict) -> None:
 # Stage: infer                                                              #
 # ======================================================================= #
 def stage_infer(args: argparse.Namespace, cfg: dict) -> None:
-    import numpy as np
     device = select_device()
 
     if not args.ckpt:
@@ -258,9 +254,9 @@ def stage_infer(args: argparse.Namespace, cfg: dict) -> None:
         approx_levels=cfg["data"]["approx_levels"],
         max_len=cfg["data"]["max_lc_len"],
         sigma_curve_size=cfg["data"]["sigma_curve_size"],
-        image_size=cfg["data"]["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"],
+        observed_feature_config=cfg["data"].get("observed_features", {}),
     )
     loader = torch.utils.data.DataLoader(
         ds, batch_size=1, shuffle=False, **_loader_kwargs(device)
@@ -274,14 +270,10 @@ def stage_infer(args: argparse.Namespace, cfg: dict) -> None:
         for i, batch in enumerate(loader):
             batch_d = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                        for k, v in batch.items()}
-            use_img = batch_d["use_image"]
-            if isinstance(use_img, (list, tuple)):
-                use_img = torch.tensor(use_img, dtype=torch.bool, device=device)
 
             pred = model(
                 lc=batch_d["lc"], lc_mask=batch_d["lc_mask"],
                 params=batch_d["params"], sigma_curve=batch_d["sigma_curve"],
-                image=batch_d["image"], use_image=use_img,
                 target_mode=batch_d["target_mode"].to(device),
             )
             if target_mode == 1 and pred["mode1"]:
@@ -294,10 +286,6 @@ def stage_infer(args: argparse.Namespace, cfg: dict) -> None:
                     "idx": i,
                     "dm_correction": pred["mode2"]["dm_correction"].cpu().numpy().tolist(),
                 })
-            elif target_mode == 3 and pred["mode3"]:
-                residual = pred["mode3"]["source_residual"].cpu().numpy()
-                np.save(out_dir / f"residual_{i:04d}.npy", residual)
-                results.append({"idx": i, "residual_saved": True})
 
             if args.dry_run:
                 break
@@ -325,13 +313,13 @@ def stage_evaluate(args: argparse.Namespace, cfg: dict) -> None:
 
     test_ds = LensCorrectionDataset(
         h5_paths=h5_paths, split="test",
-        modes=[1, 2, 3],
+        modes=[1, 2],
         approx_levels=cfg["data"]["approx_levels"],
         max_len=cfg["data"]["max_lc_len"],
         sigma_curve_size=cfg["data"]["sigma_curve_size"],
-        image_size=cfg["data"]["image_size"],
         mode2_max_dm_dim=cfg["model"]["mode2_max_dm_dim"],
         param_norm=cfg["data"]["param_normalization"],
+        observed_feature_config=cfg["data"].get("observed_features", {}),
     )
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=cfg["training"]["batch_size"],
@@ -361,8 +349,8 @@ def main() -> None:
     parser.add_argument("--real",        help="실측 HDF5 glob 패턴")
     parser.add_argument("--ckpt",        help="체크포인트 경로")
     parser.add_argument("--input",       help="추론 입력 HDF5")
-    parser.add_argument("--target-mode", help="추론 대상 Mode (1/2/3)", dest="target_mode")
-    parser.add_argument("--modes",       help="학습 Mode 목록 (예: 1,2,3)")
+    parser.add_argument("--target-mode", help="추론 대상 Mode (1/2)", dest="target_mode")
+    parser.add_argument("--modes",       help="학습 Mode 목록 (예: 1,2)")
     parser.add_argument("--output",      help="runs/ 출력 디렉토리")
     parser.add_argument("--out",         help="추론 결과 출력 디렉토리")
     parser.add_argument("--benchmarks",  help="벤치마크 대상 (all 또는 쉼표구분)")
@@ -371,7 +359,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-out", help="best.pt 복사 저장 경로")
     parser.add_argument("--history-out", help="epoch history JSON 저장 경로")
     parser.add_argument("--mode1-only", action="store_true",
-                        help="Mode 1 loss만 활성화(mode2/mode3/physics weight=0)")
+                        help="Mode 1 loss만 활성화(mode2/physics weight=0)")
     parser.add_argument("--dry-run",     action="store_true",
                         help="데이터 로드 + 모델 빌드 + 1 step (CI용)")
     args = parser.parse_args()

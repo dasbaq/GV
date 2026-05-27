@@ -1,0 +1,45 @@
+- name: grailx_negative_delay_autofix
+  redshifts:
+    z_lens: 0.44
+    z_source: 1.66
+  lens_model:
+    H0_approx: 69.0
+  time_delay:
+    dt_lc: -12.5
+    dt_lc_sigma: 0.9
+    image_pair_convention: brightest_pair_positive_delay
+    pair_order:
+      leading_image: A
+      trailing_image: B
+  light_curve_quality:
+    N_epochs: 70
+    baseline_days: 900.0
+    median_cadence_days: 6.0
+    median_photometric_error: 0.07
+
+- name: grailx_missing_sigma_invalid
+  redshifts:
+    z_lens: 0.51
+    z_source: 2.03
+  time_delay:
+    dt_lc: 15.0
+  light_curve_quality:
+    N_epochs: 80
+    baseline_days: 1000.0
+    median_cadence_days: 4.0
+    median_photometric_error: 0.05
+
+- name: grailx_truth_key_invalid
+  redshifts:
+    z_lens: 0.51
+    z_source: 2.03
+  kinematics:
+    M200: 1.0e13
+  time_delay:
+    dt_lc: 15.0
+    dt_lc_sigma: 1.0
+  light_curve_quality:
+    N_epochs: 80
+    baseline_days: 1000.0
+    median_cadence_days: 4.0
+    median_photometric_error: 0.05
