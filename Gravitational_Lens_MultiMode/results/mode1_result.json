@@ -1,0 +1,66 @@
+{
+  "H0": 85.76122139895415,
+  "H0_approx": 69.9667144765034,
+  "H0_uncertainty": 0.0,
+  "approx_level": 0,
+  "confidence_grade": "conservative",
+  "dphi_rad2": 3.3124478180969764e-11,
+  "dt_obs_days": 105.1395234861,
+  "dt_uncertainty_days": 1.0,
+  "input": "results/mode1_obs.h5",
+  "ml_correction": {
+    "applied": true,
+    "checkpoint": "data/checkpoints/phase4_v0_2_imgres_best.pt",
+    "config": "config/ml.yaml",
+    "correction_approx_level": 1,
+    "device": "cpu",
+    "h0_correction": 15.79450692245075,
+    "h0_correction_scaled_raw": -0.29515767097473145,
+    "input_adapter": {
+      "correction_approx_level": 1,
+      "n_valid_lc": 220,
+      "raw_params": {
+        "H0_approx": 69.9667144765034,
+        "dt_lc": 105.1395234861,
+        "dt_lc_sigma": 4.7312785568745,
+        "q": 0.8,
+        "sigma_v": 300.00000527396344,
+        "theta_E": 1.6788606643676756,
+        "z_lens": 0.44999998807907104,
+        "z_source": 1.7999999523162842
+      },
+      "use_image": false
+    },
+    "log_sigma": -0.8888027667999268,
+    "posthoc_sigma_scale": 1.47,
+    "scale_source": "filtered_val_abs_residual_over_pred_sigma_mean",
+    "scaler": "data/target_scaler_phase4_v0_2.pkl",
+    "sigma_H0_raw": 2.3572835671887167,
+    "sigma_H0_scaled": 3.4652068437674135
+  },
+  "mock": true,
+  "mu_time_delay": 0.1,
+  "sie_fit": {
+    "max_residual_arcsec": 2.220446049250313e-16,
+    "mu_fit": 0.6000000000000004,
+    "position_angle": 0.0,
+    "q": 0.8,
+    "residual_rms_arcsec": 2.220446049250313e-16,
+    "sigma_v": 300.00000527396344,
+    "source_pos_xy": [
+      0.41971516609191895,
+      0.0
+    ],
+    "theta_1": [
+      2.0985758304595947,
+      0.0
+    ],
+    "theta_2": [
+      -1.2591454982757568,
+      0.0
+    ],
+    "theta_E": 1.6788606643676756
+  },
+  "sigma_min": -1.0384143944001747,
+  "system_index": 0
+}

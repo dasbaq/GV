@@ -3,6 +3,25 @@
 
 ---
 
+## [2026-05-27] — Phase 4 v0.7 post-hoc sigma scaling
+- `ml/inference/mode1.py`: Mode 1 관측 결과를 ML 입력 tensor로 변환하고,
+  config/scaler/checkpoint 로드 → `MultiModalErrorCorrector` forward → H0 correction/sigma 산출 helper 추가.
+- `pipelines/run_mode1.py`: `--apply-correction`이 실제 ML inference hook을 호출하도록 연결하고
+  `--correction-scaler`, `--ml-config`, `--correction-device`, `--correction-approx-level` 옵션 추가.
+- `pipelines/run_mode1.py`: ML correction 적용 시 `H0 = H0_approx + h0_correction`,
+  `sigma_H0_scaled = exp(log_sigma) * target_scale * mode1_sigma_scale`를 JSON에 기록.
+- `scripts/phase4_v0_2_round.py`: Mode 1 평가에 `--mode1-sigma-scale` 및 `--eval-only` 옵션을 추가하고,
+  H0 보정값/RMSE/r은 그대로 둔 채 predicted sigma와 coverage/QQ 진단에만 post-hoc scale을 적용.
+- `scripts/phase4_v0_2_round.py`: eval-only/평가 경로에서 `model.eval()`을 명시해 dropout이
+  calibration 재평가를 흔들지 않도록 고정.
+- eval JSON `log_sigma_calibration`에 `posthoc_sigma_scale`, scale source,
+  unscaled/scaled predicted sigma 통계를 함께 기록.
+- `pipelines/run_mode1.py`: 향후 ML inference hook과 같은 `--mode1-sigma-scale` CLI 옵션을 예약하고,
+  현재 미구현 correction metadata에도 scale 값을 남김.
+- `tests/test_posthoc_sigma_scaling.py`: scale `1.47`이 sigma만 바꾸고 H0 metrics는 바꾸지 않으며,
+  기본 scale `1.0`은 기존 sigma를 보존하는 회귀 테스트 추가.
+- 재훈련 없음. calibration weight 증가는 중단하고 uncertainty calibration은 추론/평가 후처리로 처리.
+
 ## [2026-05-22] — Phase 4 v0.2 Kaggle Dataset dry-run 준비
 - `scripts/sync_to_kaggle.py`: round handoff 파일 목록에 `data/logs/phase4_v0_2_floor_analysis.json`을 포함하고 dry-run 파일 표시를 repo-relative source/staged name으로 정리.
 - `python scripts/sync_to_kaggle.py --round phase4_v0_2 --init-dataset --slug lens-phase4-v0-2` dry-run 확인: train HDF5, unfiltered eval HDF5, target scaler, equivalence JSON, floor JSON 모두 포함, missing 0.

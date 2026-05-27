@@ -7,6 +7,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 from core.physics.config import constants
 from core.physics.lens_models import SIELens
@@ -97,12 +98,14 @@ def test_run_mode1_e2e_recovers_forward_h0(tmp_path: Path) -> None:
         system_index=0,
         approx_level=0,
         apply_correction=True,
+        mode1_sigma_scale=1.47,
         delay_config=_mode1_delay_cfg(dt_true),
     )
 
     assert result["mock"] is True
     assert result["ml_correction"]["applied"] is False
     assert "correction skipped" in result["ml_correction"]["reason"]
+    assert result["ml_correction"]["posthoc_sigma_scale"] == 1.47
     assert abs(result["dt_obs_days"] - dt_true) < 0.15
     assert abs(result["H0"] - 70.0) < 0.2
     assert result["dphi_rad2"] > 0.0
@@ -127,6 +130,8 @@ def test_run_mode1_cli_writes_json(tmp_path: Path) -> None:
             "--approx-level",
             "0",
             "--apply-correction",
+            "--mode1-sigma-scale",
+            "1.47",
             "--delay-config",
             str(cfg_path),
             "--output",
@@ -139,5 +144,35 @@ def test_run_mode1_cli_writes_json(tmp_path: Path) -> None:
     )
     result = json.loads(output_path.read_text(encoding="utf-8"))
     assert result["mock"] is True
+    assert result["ml_correction"]["posthoc_sigma_scale"] == 1.47
     assert abs(result["H0"] - 70.0) < 0.2
     assert abs(result["dt_obs_days"] - dt_true) < 0.15
+
+
+def test_run_mode1_applies_existing_ml_checkpoint(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    ckpt = root / "data" / "checkpoints" / "phase4_v0_2_imgres_best.pt"
+    scaler = root / "data" / "target_scaler_phase4_v0_2.pkl"
+    if not ckpt.exists() or not scaler.exists():
+        pytest.skip("local Phase 4 v0.2 checkpoint/scaler artifacts are not available")
+
+    input_path, dt_true = _write_forward_observation_h5(tmp_path / "mode1_obs.h5")
+    result = run_mode1(
+        input_path,
+        system_index=0,
+        approx_level=0,
+        apply_correction=True,
+        correction_checkpoint=ckpt,
+        correction_scaler=scaler,
+        correction_device="cpu",
+        mode1_sigma_scale=1.47,
+        delay_config=_mode1_delay_cfg(dt_true),
+    )
+
+    correction = result["ml_correction"]
+    assert correction["applied"] is True
+    assert correction["input_adapter"]["use_image"] is False
+    assert correction["posthoc_sigma_scale"] == 1.47
+    assert correction["sigma_H0_raw"] > 0.0
+    assert correction["sigma_H0_scaled"] == pytest.approx(correction["sigma_H0_raw"] * 1.47)
+    assert result["H0"] == pytest.approx(result["H0_approx"] + correction["h0_correction"])

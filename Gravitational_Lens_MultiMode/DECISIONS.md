@@ -4,6 +4,39 @@
 
 ---
 
+## [2026-05-27] Phase 4 v0.7 Mode 1 uncertainty calibration
+
+### 결정
+v0.7 Mode 1 uncertainty calibration은 재훈련이나 calibration loss weight 증가가 아니라
+post-hoc sigma scaling으로 처리한다.
+
+공식 scale은 filtered val의 `abs_residual / pred_sigma` 평균 `1.47`로 고정한다.
+
+```
+pred_sigma_calibrated = pred_sigma_raw * 1.47
+```
+
+### 운영 규칙
+- H0 correction point estimate, corrected H0, RMSE, r, correction sign, leak trigger 입력값은 변경하지 않는다.
+- scaling은 predicted sigma와 그로부터 계산되는 coverage, outlier rate, QQ 진단에만 적용한다.
+- filtered val은 공식 acceptance 기준으로 유지하고, unfiltered는 selection-bias 진단으로만 기록한다.
+- `scripts/phase4_v0_2_round.py --eval-only --mode1-sigma-scale 1.47`로 기존 checkpoint/scaler를
+  재훈련 없이 재평가한다.
+- `pipelines/run_mode1.py --mode1-sigma-scale`은 향후 ML inference hook과 같은 metadata를 남기되,
+  현재 placeholder 상태에서는 H0 값을 바꾸지 않는다.
+
+### 결정 근거
+v0.7 진단에서 calibration weight `0.1 -> 0.3` 증가는 filtered coverage를 `0.52 -> 0.42`로 악화시켰다.
+이는 uncertainty head를 더 압박하는 대신 task loss 학습을 방해해 잔차 자체를 키운 것으로 본다.
+filtered val은 SIE 표준 근사 오차가 큰 극단 케이스와 heavy-tail이 모인 작은 표본(n=50)이므로,
+재훈련보다 추론/평가 후처리 sigma calibration이 더 좁고 해석 가능한 대응이다.
+
+### 관련 파일
+- `scripts/phase4_v0_2_round.py`
+- `pipelines/run_mode1.py`
+- `tests/test_posthoc_sigma_scaling.py`
+- `tests/test_run_mode1_e2e.py`
+
 ## [2026-05-22] Mode 1 Fermat potential unit convention
 
 ### 결정

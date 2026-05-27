@@ -14,6 +14,10 @@ from inversion.delay_extraction import extract_delay_from_observation
 from inversion.mode1_h0 import invert_h0
 from inversion.observation_io import ObservedLensSystem, from_hdf5
 from inversion.sie_fit import fit_sie_to_images
+from ml.inference.mode1 import run_mode1_correction
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_json(path: str | Path | None) -> dict[str, Any] | None:
@@ -58,22 +62,71 @@ def _apply_ml_correction(
     *,
     apply_correction: bool,
     checkpoint: str | Path | None,
+    scaler: str | Path,
+    config: str | Path,
+    device: str,
+    correction_approx_level: int,
+    mode1_sigma_scale: float,
+    observation: ObservedLensSystem,
+    input_path: str | Path,
+    system_index: int,
+    delay: dict[str, Any],
+    sie_fit: dict[str, Any],
 ) -> tuple[float, dict[str, Any]]:
+    if not np.isfinite(mode1_sigma_scale) or mode1_sigma_scale <= 0.0:
+        raise ValueError("mode1_sigma_scale must be finite and positive")
+    metadata = {
+        "posthoc_sigma_scale": float(mode1_sigma_scale),
+        "scale_source": "filtered_val_abs_residual_over_pred_sigma_mean",
+        "scale_note": "reserved for ML-predicted Mode 1 sigma; H0 point estimate is unchanged",
+    }
     if not apply_correction:
-        return h0_approx, {"applied": False, "reason": "correction disabled"}
+        return h0_approx, {"applied": False, "reason": "correction disabled", **metadata}
     if checkpoint is None:
-        return h0_approx, {"applied": False, "reason": "correction skipped: checkpoint not provided"}
+        return h0_approx, {
+            "applied": False,
+            "reason": "correction skipped: checkpoint not provided",
+            **metadata,
+        }
     ckpt_path = Path(checkpoint)
     if not ckpt_path.exists():
         return h0_approx, {
             "applied": False,
             "reason": f"correction skipped: checkpoint not found ({ckpt_path})",
+            **metadata,
         }
-    return h0_approx, {
-        "applied": False,
-        "checkpoint": str(ckpt_path),
-        "reason": "correction skipped: Phase 5 ML inference hook is not implemented yet",
-    }
+    scaler_path = Path(scaler)
+    if not scaler_path.exists():
+        return h0_approx, {
+            "applied": False,
+            "checkpoint": str(ckpt_path),
+            "reason": f"correction skipped: scaler not found ({scaler_path})",
+            **metadata,
+        }
+    config_path = Path(config)
+    if not config_path.exists():
+        return h0_approx, {
+            "applied": False,
+            "checkpoint": str(ckpt_path),
+            "scaler": str(scaler_path),
+            "reason": f"correction skipped: ML config not found ({config_path})",
+            **metadata,
+        }
+    correction = run_mode1_correction(
+        observation=observation,
+        input_path=input_path,
+        system_index=system_index,
+        delay=delay,
+        sie_fit=sie_fit,
+        h0_approx=h0_approx,
+        checkpoint_path=ckpt_path,
+        scaler_path=scaler_path,
+        config_path=config_path,
+        mode1_sigma_scale=mode1_sigma_scale,
+        correction_approx_level=correction_approx_level,
+        device_name=device,
+    )
+    return h0_approx + float(correction["h0_correction"]), correction
 
 
 def run_mode1(
@@ -83,6 +136,11 @@ def run_mode1(
     approx_level: int = 0,
     apply_correction: bool = False,
     correction_checkpoint: str | Path | None = None,
+    correction_scaler: str | Path = ROOT / "data" / "target_scaler_phase4_v0_2.pkl",
+    ml_config: str | Path = ROOT / "config" / "ml.yaml",
+    correction_device: str = "auto",
+    correction_approx_level: int = 1,
+    mode1_sigma_scale: float = 1.0,
     delay_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run observation-to-H0 Mode 1 inversion.
@@ -102,7 +160,7 @@ def run_mode1(
         observation,
         delay_config,
         is_mock=is_mock,
-        return_grid=False,
+        return_grid=bool(apply_correction),
     )
     if delay["confidence_grade"] == "rejected" or not np.isfinite(delay["dt_obs_days"]):
         raise RuntimeError("time-delay extraction rejected the observation")
@@ -126,6 +184,16 @@ def run_mode1(
         h0_approx,
         apply_correction=apply_correction,
         checkpoint=correction_checkpoint,
+        scaler=correction_scaler,
+        config=ml_config,
+        device=correction_device,
+        correction_approx_level=correction_approx_level,
+        mode1_sigma_scale=mode1_sigma_scale,
+        observation=observation,
+        input_path=path,
+        system_index=system_index,
+        delay=delay,
+        sie_fit=sie_fit,
     )
 
     result = {
@@ -166,6 +234,15 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--approx-level", type=int, default=0, choices=(0, 1, 2))
     parser.add_argument("--apply-correction", action="store_true")
     parser.add_argument("--correction-checkpoint")
+    parser.add_argument(
+        "--correction-scaler",
+        default=str(ROOT / "data" / "target_scaler_phase4_v0_2.pkl"),
+    )
+    parser.add_argument("--ml-config", default=str(ROOT / "config" / "ml.yaml"))
+    parser.add_argument("--correction-device", default="auto", choices=("auto", "cpu", "cuda", "mps"))
+    parser.add_argument("--correction-approx-level", type=int, default=1, choices=(1, 2))
+    parser.add_argument("--mode1-sigma-scale", type=float, default=1.0,
+                        help="Post-hoc multiplier reserved for Mode 1 ML sigma.")
     parser.add_argument("--delay-config", help="Optional JSON config for Phase 1 delay extraction")
     parser.add_argument("--output", required=True, help="Output JSON path")
     args = parser.parse_args(argv)
@@ -176,6 +253,11 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         approx_level=args.approx_level,
         apply_correction=args.apply_correction,
         correction_checkpoint=args.correction_checkpoint,
+        correction_scaler=args.correction_scaler,
+        ml_config=args.ml_config,
+        correction_device=args.correction_device,
+        correction_approx_level=args.correction_approx_level,
+        mode1_sigma_scale=args.mode1_sigma_scale,
         delay_config=_load_json(args.delay_config),
     )
     out = Path(args.output)

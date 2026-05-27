@@ -1,0 +1,79 @@
+{
+  "round": "phase4_v0_3_1",
+  "phase": "equivalence",
+  "device": {
+    "requested_device": "mps",
+    "torch_version": "2.11.0",
+    "cuda_available": false,
+    "cuda_device_count": 0,
+    "cuda_device_name": null,
+    "nvidia_smi": {
+      "error": "[Errno 2] No such file or directory: 'nvidia-smi'"
+    }
+  },
+  "forward_only": {
+    "target_device": "mps",
+    "threshold": 0.0001,
+    "diffs": {
+      "mode1_pred": 7.450580596923828e-09,
+      "log_sigma_mode1": 7.450580596923828e-09,
+      "mode2_pred": 5.587935447692871e-08,
+      "log_sigma_mode2": 2.9802322387695312e-08,
+      "mode3_pred": 1.043081283569336e-07
+    },
+    "passed": true
+  },
+  "distribution_equivalence": {
+    "target_device": "mps",
+    "rows": [
+      {
+        "seed": 42,
+        "device": "cpu",
+        "num_workers": 0,
+        "val_m1": 1.1900857910513878
+      },
+      {
+        "seed": 42,
+        "device": "mps",
+        "num_workers": 0,
+        "val_m1": 1.1922266200184821
+      },
+      {
+        "seed": 1337,
+        "device": "cpu",
+        "num_workers": 0,
+        "val_m1": 0.7885188885033131
+      },
+      {
+        "seed": 1337,
+        "device": "mps",
+        "num_workers": 0,
+        "val_m1": 0.788412393629551
+      },
+      {
+        "seed": 7,
+        "device": "cpu",
+        "num_workers": 0,
+        "val_m1": 1.061538928747177
+      },
+      {
+        "seed": 7,
+        "device": "mps",
+        "num_workers": 0,
+        "val_m1": 1.0533451586961746
+      }
+    ],
+    "cpu_mean": 1.0133812027672926,
+    "cpu_std": 0.20506918158070206,
+    "mps_mean": 1.0113280574480692,
+    "mps_std": 0.20515984001868615,
+    "cpu_mean_pm_2std": [
+      0.6032428396058884,
+      1.4235195659286968
+    ],
+    "welch_p": 0.9908057441862502,
+    "passed": true
+  },
+  "passed": true,
+  "next": "next: --phase train on CUDA"
+}

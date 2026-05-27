@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
 
-마지막 업데이트: 2026-05-22
+마지막 업데이트: 2026-05-27
 
 ---
 
@@ -93,6 +93,7 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [x] inversion/sie_fit.py            — 관측 상 위치 → SIE fit → Δφ 산출
 [x] inversion/mode1_h0.py          — H₀ 역산 솔버 단위/import 정합성 수정 (Δφ [rad²])
 [x] pipelines/run_mode1.py          — 관측 HDF5 → Δt_obs/Δφ → H₀ JSON CLI
+                                      + Mode 1 ML checkpoint/scaler inference hook
 [ ] inversion/mode2_dm.py          — DM 분포 역산 솔버 (SIE 가정)
 [ ] inversion/mode3_wrapper.py     — 기존 Mode 3 솔버 호출 wrapper (코드 수정 금지)
 ```
@@ -218,13 +219,31 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   `target_scaler_phase4_v0_2.pkl`, `phase4_v0_2_equivalence.json`,
   `phase4_v0_2_floor_analysis.json`이 포함되고 missing 0이다.
   실제 upload는 사용자 승인 전이라 미실행 상태다.
+- Phase 4 v0.7 진단에서 calibration weight 증가는 효과가 없었다.
+  filtered val(n=50)는 coverage `0.42`, CI `[0.28, 0.57]`로 목표 `[0.62, 0.78]`과
+  겹치지 않았고 `abs_res/sigma mean=1.47`, QQ tail `N=+3 -> 3.42`,
+  `N=-3 -> -5.83`의 heavy-tail이 확인됐다. unfiltered는 coverage `0.735`,
+  `abs_res/sigma=0.74`, RMSE `3.52`, r `0.794`로 filtered와 성격이 달라 selection-bias
+  진단 지표로만 본다.
+- v0.7은 재훈련 없이 post-hoc sigma scaling을 적용한다.
+  공식 scale은 filtered val `abs_res/sigma mean=1.47`로 고정하며,
+  `scripts/phase4_v0_2_round.py --eval-only --mode1-sigma-scale 1.47`은 predicted sigma와
+  coverage/QQ 진단만 바꾸고 H0 보정값, RMSE, r, leak trigger 입력값은 바꾸지 않는다.
+  `pipelines/run_mode1.py --mode1-sigma-scale`도 같은 metadata를 예약한다.
+- Mode 1 ML inference hook을 `pipelines/run_mode1.py --apply-correction`에 연결했다.
+  기존 `data/checkpoints/phase4_v0_2_imgres_best.pt`와
+  `data/target_scaler_phase4_v0_2.pkl`로 synthetic smoke 실행 시
+  `H0_approx=69.9667`, ML 적용 후 `H0=85.7612`, `h0_correction=15.7945`,
+  `sigma_H0_raw=2.3573`, `sigma_H0_scaled=3.4652`, `use_image=false`를 확인했다.
 
 ---
 
 ## 다음 작업
 
 1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. 사용자 승인 후 Phase 4 v0.2 Kaggle Dataset `--execute` 업로드 또는 Kaggle CUDA `--phase train` 재학습 라운드 수행
+2. v0.7 post-hoc sigma scaling 재평가 실행:
+   `python scripts/phase4_v0_2_round.py --eval-only --mode1-sigma-scale 1.47 --bootstrap-n 1000`
 3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
 4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
-5. Phase 5 ML 보정 학습/추론 checkpoint를 `pipelines/run_mode1.py --apply-correction` 훅에 연결
+5. Mode 1 ML 보정은 synthetic smoke까지 완료. 다음은 실측/benchmark 입력 확보 후
+   `run_mode1.py --apply-correction --mode1-sigma-scale 1.47` 결과 검증

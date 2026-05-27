@@ -3,6 +3,47 @@
 
 ---
 
+## [2026-05-27] Phase 4 v0.7 post-hoc sigma scaling diagnostic
+
+v0.7은 재훈련 없이 Mode 1 predicted sigma만 `1.47x` 스케일하는 uncertainty
+post-calibration으로 판정한다. 아래 v0.7 수치는 사용자 제공 진단이며, 이번 로컬 세션에서는
+코드 경로와 회귀 테스트만 실행했다.
+
+### 공식 filtered val 기준
+
+| 항목 | 현재 | 기준/해석 | 판정 |
+|------|------|-----------|------|
+| filtered val n | `50` | 작은 표본, coverage 표준오차 약 `±0.066` | 주의 |
+| 1σ coverage | `0.42`, CI `[0.28, 0.57]` | 목표 `[0.62, 0.78]`와 non-overlap | FAIL |
+| abs_res/sigma mean | `1.47` | sigma가 실제 잔차 대비 작음 | scale source |
+| QQ tail | `N=+3 -> 3.42`, `N=-3 -> -5.83` | SIE 극단 케이스 heavy-tail | 진단 |
+| post-hoc sigma | `pred_sigma * 1.47` | abs_res/sigma를 약 `1.0`으로 이동 | 적용 방침 |
+
+### unfiltered selection-bias 진단
+
+| 항목 | 결과 | 해석 |
+|------|------|------|
+| 1σ coverage | `0.735` | unfiltered에서는 sigma 과대추정 경향 |
+| abs_res/sigma mean | `0.74` | filtered와 반대 방향 |
+| RMSE | `3.52` | filtered와 큰 격차 |
+| r | `0.794` | 더 큰 집합의 진단 지표로만 사용 |
+
+### 로컬 검증
+
+- `python -m py_compile scripts/phase4_v0_2_round.py pipelines/run_mode1.py` → pass.
+- `pytest -q tests/test_posthoc_sigma_scaling.py tests/test_run_mode1_e2e.py tests/test_heads.py` → 16 passed.
+- 기존 v0.2 checkpoint/scaler로 eval-only smoke:
+  `python scripts/phase4_v0_2_round.py --eval-only --device cpu --mode1-sigma-scale 1.47 --bootstrap-n 10 --workers 0`
+  → filtered 1σ coverage `0.86`, CI `[0.733, 0.942]`; H0 r/RMSE는 기존 v0.2 checkpoint 특성으로 공식 v0.7 판정 아님.
+- Mode 1 CLI ML correction smoke:
+  synthetic observation HDF5 + `data/checkpoints/phase4_v0_2_imgres_best.pt`
+  + `data/target_scaler_phase4_v0_2.pkl` + `--mode1-sigma-scale 1.47`
+  → `H0_approx=69.9667`, `H0=85.7612`, `h0_correction=15.7945`,
+  `sigma_H0_raw=2.3573`, `sigma_H0_scaled=3.4652`, `use_image=false`.
+
+재평가 명령:
+- `python scripts/phase4_v0_2_round.py --eval-only --mode1-sigma-scale 1.47 --bootstrap-n 1000`
+
 ## [2026-05-22] Phase 1 observation-format Δt extraction MOCK
 
 원본 system6 실측 파일이 없어 `ObservedLensSystem.light_curves` 포맷을 흉내낸 합성

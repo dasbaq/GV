@@ -1,0 +1,248 @@
+{
+  "H0_KS_against_U_60_80": {
+    "pvalue": 0.9999931854451685,
+    "statistic": 0.012947738647460936
+  },
+  "baselines": {
+    "filtered": {
+      "no_correction": {
+        "MAE": 18.345777404785157,
+        "RMSE": 19.317618480509537,
+        "bias": -18.345777404785157,
+        "r": 0.5739352454581971
+      },
+      "perfect_joint_oracle": {
+        "MAE": 0.0,
+        "RMSE": 0.0,
+        "bias": 0.0,
+        "r": 1.0
+      },
+      "target_sign_note": "Phase 4 HDF5 correction = H0_true - H0_approx; corrected H0 = H0_approx + correction."
+    },
+    "unfiltered": {
+      "no_correction": {
+        "MAE": 30.377603028416633,
+        "RMSE": 33.24856693819984,
+        "bias": -30.377603028416633,
+        "r": 0.25079761488136887
+      },
+      "perfect_joint_oracle": {
+        "MAE": 0.0,
+        "RMSE": 0.0,
+        "bias": 0.0,
+        "r": 1.0
+      },
+      "target_sign_note": "Phase 4 HDF5 correction = H0_true - H0_approx; corrected H0 = H0_approx + correction."
+    }
+  },
+  "catalog_path": "data/mock/phase4_v0_3_1.h5",
+  "eval_unfiltered_path": "data/mock/phase4_v0_3_1_eval_unfiltered.h5",
+  "filtered_unfiltered_distribution_match": [
+    {
+      "feature": "H0_true",
+      "filtered": {
+        "max": 79.9881820678711,
+        "mean": 70.00238871002198,
+        "min": 60.008338928222656,
+        "std": 5.768125409050103
+      },
+      "ks_pvalue": 0.1441213253497911,
+      "ks_statistic": 0.095,
+      "unfiltered": {
+        "max": 79.89630126953125,
+        "mean": 70.74598690032958,
+        "min": 60.0332145690918,
+        "std": 5.656255102241015
+      },
+      "wasserstein": 0.7476189270019532
+    },
+    {
+      "feature": "correction",
+      "filtered": {
+        "max": 32.26127243041992,
+        "mean": 18.345777316093447,
+        "min": 5.960874080657959,
+        "std": 6.050027534268699
+      },
+      "ks_pvalue": 1.0506928531726796e-28,
+      "ks_statistic": 0.467,
+      "unfiltered": {
+        "max": 69.33940124511719,
+        "mean": 30.37760281562805,
+        "min": 6.54278039932251,
+        "std": 13.51548881718439
+      },
+      "wasserstein": 12.031825499534605
+    },
+    {
+      "feature": "dphi_ratio",
+      "filtered": {
+        "max": 0.9200705885887146,
+        "mean": 0.7381416636705399,
+        "min": 0.5887486338615417,
+        "std": 0.08267016694078311
+      },
+      "ks_pvalue": 2.5049632874729933e-33,
+      "ks_statistic": 0.502,
+      "unfiltered": {
+        "max": 0.8975462913513184,
+        "mean": 0.5703885123506188,
+        "min": 0.025311104953289032,
+        "std": 0.1891852701504639
+      },
+      "wasserstein": 0.16775315131992102
+    },
+    {
+      "feature": "mu",
+      "filtered": {
+        "max": 0.9698953032493591,
+        "mean": 0.6837820499241352,
+        "min": 0.12442439794540405,
+        "std": 0.19001436074194689
+      },
+      "ks_pvalue": 0.026524237901263733,
+      "ks_statistic": 0.122,
+      "unfiltered": {
+        "max": 0.9990000128746033,
+        "mean": 0.7210064217448234,
+        "min": 0.12442439794540405,
+        "std": 0.2006995057709399
+      },
+      "wasserstein": 0.038100103735923777
+    },
+    {
+      "feature": "separation",
+      "filtered": {
+        "max": 6.405551105026525,
+        "mean": 3.164689806434171,
+        "min": 0.663841094615463,
+        "std": 1.1850574485897094
+      },
+      "ks_pvalue": 1.4295078417629479e-08,
+      "ks_statistic": 0.254,
+      "unfiltered": {
+        "max": 18.82187980631029,
+        "mean": 4.60675919363276,
+        "min": 0.15967312555219607,
+        "std": 2.934825281826831
+      },
+      "wasserstein": 1.4812643037173632
+    }
+  ],
+  "mode1_H0_correction": {
+    "max": 32.26127243041992,
+    "mean": 18.345777316093447,
+    "min": 5.960874080657959,
+    "std": 6.050027534268699
+  },
+  "nan_input_tail_safety_filtered": {
+    "F_joint_absmax": {
+      "check": "max_le",
+      "max": 3.347299575805664,
+      "mean": 2.3789253249168394,
+      "min": 1.5271327495574951,
+      "p50": 2.3408576250076294,
+      "p90": 2.831400012969971,
+      "p95": 2.9551849722862236,
+      "p99": 3.2983885169029237,
+      "std": 0.31795936038096523,
+      "threshold": 3.408,
+      "within_v0_2_safe_range": true
+    },
+    "I_obs_sum": {
+      "check": "max_le",
+      "max": 69.03151780455673,
+      "mean": 21.994708196097818,
+      "min": 4.069781689712858,
+      "p50": 18.515406169957018,
+      "p90": 38.28568652110549,
+      "p95": 44.79472805592812,
+      "p99": 62.395619601218975,
+      "std": 11.460337206283787,
+      "threshold": 77.79,
+      "within_v0_2_safe_range": true
+    },
+    "correction_abs": {
+      "check": "reference_only",
+      "max": 32.26127243041992,
+      "mean": 18.345777316093447,
+      "min": 5.960874080657959,
+      "note": "Not applied as a v0.3.1 gate; reported against v0.2 reference only.",
+      "p50": 18.02887725830078,
+      "p90": 26.441588401794434,
+      "p95": 28.292494297027588,
+      "p99": 31.16393823623657,
+      "std": 6.050027534268699,
+      "threshold": 32.27,
+      "within_v0_2_safe_range": true
+    },
+    "dphi_ratio": {
+      "check": "range",
+      "max": 0.9200705885887146,
+      "mean": 0.7381416636705399,
+      "min": 0.5887486338615417,
+      "p50": 0.7402494549751282,
+      "p90": 0.8489563524723053,
+      "p95": 0.8716411501169202,
+      "p99": 0.9016545599699021,
+      "std": 0.08267016694078311,
+      "threshold": [
+        0.5878,
+        0.9201
+      ],
+      "within_v0_2_safe_range": true
+    },
+    "dt_approx": {
+      "check": "max_le",
+      "max": 443.8860168457031,
+      "mean": 54.16366645722836,
+      "min": 0.042833466082811356,
+      "p50": 28.248663902282715,
+      "p90": 135.4112014770508,
+      "p95": 200.67981185913075,
+      "p99": 379.1056716918945,
+      "std": 71.93473854060852,
+      "threshold": 444.7,
+      "within_v0_2_safe_range": true
+    },
+    "mu_abs": {
+      "check": "max_le",
+      "max": 0.9698953032493591,
+      "mean": 0.6837820499241352,
+      "min": 0.12442439794540405,
+      "p50": 0.7190319895744324,
+      "p90": 0.9148862302303314,
+      "p95": 0.9361690312623978,
+      "p99": 0.965289940237999,
+      "std": 0.19001436074194689,
+      "threshold": 0.9699,
+      "within_v0_2_safe_range": true
+    },
+    "separation": {
+      "check": "min_ge",
+      "max": 6.405551105026525,
+      "mean": 3.164689806434171,
+      "min": 0.663841094615463,
+      "p50": 3.102566205921147,
+      "p90": 4.807899003219931,
+      "p95": 5.112619161416866,
+      "p99": 5.881596626414651,
+      "std": 1.1850574485897094,
+      "threshold": 0.6598,
+      "within_v0_2_safe_range": true
+    }
+  },
+  "predeclared_selection_bias_acceptance": {
+    "baselines_required": [
+      "no_correction",
+      "perfect_joint_oracle"
+    ],
+    "coverage_1sigma_target": [
+      0.62,
+      0.78
+    ],
+    "note": "Apply after Kaggle CUDA train; this M2 analysis only fixes catalog/baseline inputs.",
+    "unfiltered_filtered_rmse_ratio_max": 2.5
+  },
+  "round": "phase4_v0_3_1"
+}

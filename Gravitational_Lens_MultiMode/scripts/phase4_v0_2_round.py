@@ -87,6 +87,8 @@ LEAK_TRIGGERS = {
     "param_encoder_input_dim": 13,
 }
 
+MODE1_SIGMA_SCALE_SOURCE = "filtered_val_abs_residual_over_pred_sigma_mean"
+
 
 def display_path(path: Path) -> str:
     return _display_path(path, ROOT)
@@ -515,14 +517,22 @@ def ci_overlap(a: list[float], b: list[float]) -> bool:
     return max(a[0], b[0]) <= min(a[1], b[1])
 
 
+def apply_mode1_sigma_scale(pred_sigma: np.ndarray, mode1_sigma_scale: float) -> tuple[np.ndarray, np.ndarray]:
+    if not np.isfinite(mode1_sigma_scale) or mode1_sigma_scale <= 0.0:
+        raise ValueError("mode1_sigma_scale must be finite and positive")
+    unscaled = np.asarray(pred_sigma, dtype=np.float64)
+    return unscaled, unscaled * float(mode1_sigma_scale)
+
+
 def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
                            device_name: str, workers: int, path: Path,
                            ids: np.ndarray, output_path: Path,
                            label: str, training_summary: dict,
-                           infra: dict) -> dict:
+                           infra: dict, mode1_sigma_scale: float) -> dict:
     device = select_device(device_name)
     model = build_model(cfg).to(device)
     model.load_state_dict(torch.load(CKPT, map_location=device))
+    model.eval()
     loader = build_eval_loader_for_ids(cfg, path, ids, scaler, workers, device)
     pred_corr = []
     pred_sigma = []
@@ -543,7 +553,10 @@ def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
             pred_corr.append(pred_scaled * scaler["mode1"]["scale"] + scaler["mode1"]["mean"])
             pred_sigma.append(np.exp(logsig_scaled) * scaler["mode1"]["scale"])
     pred_corr = np.concatenate(pred_corr).astype(np.float64)
-    pred_sigma = np.concatenate(pred_sigma).astype(np.float64)
+    pred_sigma_unscaled = np.concatenate(pred_sigma).astype(np.float64)
+    pred_sigma_unscaled, pred_sigma = apply_mode1_sigma_scale(
+        pred_sigma_unscaled, mode1_sigma_scale
+    )
     with h5py.File(path, "r") as f:
         y_true = np.asarray(f["true_values/H0_true"][:], dtype=np.float64)[ids]
         h0_approx = np.asarray(f["approx_outputs/H0_approx"][:], dtype=np.float64)[ids]
@@ -610,11 +623,25 @@ def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
                     "target_sign_note": "Phase 4 HDF5 correction = H0_true - H0_approx, so corrected H0 is H0_approx + model_output.",
                 },
                 "log_sigma_calibration": {
+                    "posthoc_sigma_scale": float(mode1_sigma_scale),
+                    "scale_source": MODE1_SIGMA_SCALE_SOURCE,
                     "coverage_abs_residual_le_1sigma": float(np.mean(coverage)),
                     "coverage_abs_residual_le_1sigma_ci95_clopper_pearson": coverage_ci,
                     "coverage_abs_residual_le_2sigma": float(np.mean(np.abs(z) <= 2.0)),
                     "outlier_rate_abs_residual_gt_2sigma": float(np.mean(np.abs(z) > 2.0)),
                     "outlier_rate_abs_residual_gt_3sigma": float(np.mean(np.abs(z) > 3.0)),
+                    "unscaled_predicted_sigma_physical": {
+                        "mean": float(pred_sigma_unscaled.mean()),
+                        "std": float(pred_sigma_unscaled.std()),
+                        "min": float(pred_sigma_unscaled.min()),
+                        "max": float(pred_sigma_unscaled.max()),
+                    },
+                    "scaled_predicted_sigma_physical": {
+                        "mean": float(pred_sigma.mean()),
+                        "std": float(pred_sigma.std()),
+                        "min": float(pred_sigma.min()),
+                        "max": float(pred_sigma.max()),
+                    },
                     "predicted_sigma_physical": {
                         "mean": float(pred_sigma.mean()),
                         "std": float(pred_sigma.std()),
@@ -658,19 +685,43 @@ def evaluate_model_on_path(cfg: dict, scaler: dict, bootstrap_n: int,
 
 def evaluate_model(cfg: dict, scaler: dict, training_summary: dict,
                    infra: dict, bootstrap_n: int, device_name: str,
-                   workers: int, unfiltered_path: Path) -> tuple[dict, dict]:
+                   workers: int, unfiltered_path: Path,
+                   mode1_sigma_scale: float) -> tuple[dict, dict]:
     filtered_ids = split_system_ids(DATA, "val", cfg["seed"])
     with h5py.File(unfiltered_path, "r") as f:
         unfiltered_ids = np.arange(int(f["metadata"].attrs["n_systems"]))
     filtered = evaluate_model_on_path(
         cfg, scaler, bootstrap_n, device_name, workers, DATA, filtered_ids,
-        EVAL, "filtered_val", training_summary, infra
+        EVAL, "filtered_val", training_summary, infra, mode1_sigma_scale
     )
     unfiltered = evaluate_model_on_path(
         cfg, scaler, bootstrap_n, device_name, workers, unfiltered_path, unfiltered_ids,
-        EVAL_UNFILTERED, "unfiltered_all", training_summary, infra
+        EVAL_UNFILTERED, "unfiltered_all", training_summary, infra, mode1_sigma_scale
     )
     return filtered, unfiltered
+
+
+def load_existing_training_summary() -> dict:
+    if HISTORY.exists():
+        with open(HISTORY) as f:
+            payload = json.load(f)
+        training = payload.get("training")
+        if isinstance(training, dict):
+            return training
+    return {
+        "criterion": "existing_checkpoint_eval_only",
+        "ended_epoch": None,
+        "early_stop_epoch": None,
+        "best_epoch": None,
+        "best_val_m1": None,
+        "max_epochs": None,
+        "patience": None,
+        "num_workers": None,
+        "device": "existing_checkpoint",
+        "checkpoint": display_path(CKPT),
+        "data": display_path(DATA),
+        "scaler": display_path(SCALER),
+    }
 
 
 def delete_partial_outputs() -> list[dict]:
@@ -854,10 +905,15 @@ def main() -> None:
                         help="Accelerator worker count for distribution equivalence. Default follows device.")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Full retrain epoch override; default keeps v2.6 value 50.")
+    parser.add_argument("--mode1-sigma-scale", type=float, default=1.0,
+                        help="Post-hoc multiplier for Mode 1 predicted sigma only.")
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Skip training and re-evaluate an existing checkpoint/scaler.")
     args = parser.parse_args()
+    apply_mode1_sigma_scale(np.asarray([1.0], dtype=np.float64), args.mode1_sigma_scale)
     cfg = load_cfg(args.epochs)
     target_device = select_device(args.device)
-    if target_device.type == "cpu":
+    if target_device.type == "cpu" and not args.eval_only:
         raise SystemExit("This round requires cuda or mps for accelerator equivalence/retrain.")
     unfiltered_path = args.eval_unfiltered or UNFILTERED_DATA
     if unfiltered_path is None:
@@ -876,17 +932,54 @@ def main() -> None:
 
     infra = {
         "environment_sanity": environment_sanity(target_device),
+        "eval_only": bool(args.eval_only),
         "data": display_path(DATA),
         "unfiltered_eval_data": display_path(unfiltered_path),
-        "equivalence_handoff": load_equivalence_payload(args.equivalence_from),
+        "equivalence_handoff": load_equivalence_payload(
+            args.equivalence_from or (EQUIVALENCE if EQUIVALENCE.exists() else None)
+        ),
         "param_encoder_input_dim": len(cfg["data"]["param_normalization"]) + 5,
         "acceptance_predeclared": ACCEPTANCE,
         "leak_triggers_predeclared": LEAK_TRIGGERS,
+        "posthoc_mode1_sigma_scale": {
+            "scale": float(args.mode1_sigma_scale),
+            "scale_source": MODE1_SIGMA_SCALE_SOURCE,
+            "affects": "predicted sigma and calibration coverage only; model H0/RMSE/r unchanged",
+        },
     }
     if infra["param_encoder_input_dim"] != LEAK_TRIGGERS["param_encoder_input_dim"]:
         with open(INFRA, "w") as f:
             json.dump(infra, f, indent=2)
         raise SystemExit("ParamEncoder input dim changed; leak trigger fired.")
+
+    if args.eval_only:
+        if not CKPT.exists():
+            raise SystemExit(f"Eval-only checkpoint not found: {CKPT}")
+        if not SCALER.exists():
+            raise SystemExit(f"Eval-only scaler not found: {SCALER}")
+        full_scaler = load_scaler()
+        training_summary = load_existing_training_summary()
+        training_summary["eval_only"] = True
+        training_summary["num_workers"] = selected_workers
+        training_summary["device"] = target_device.type
+        infra["existing_checkpoint_eval"] = training_summary
+        filtered, unfiltered = evaluate_model(
+            cfg, full_scaler, training_summary, infra, args.bootstrap_n,
+            target_device.type, selected_workers, unfiltered_path, args.mode1_sigma_scale
+        )
+        report = acceptance_report(filtered, unfiltered, infra, training_summary)
+        infra["stage_b_acceptance_report"] = report
+        INFRA.parent.mkdir(parents=True, exist_ok=True)
+        with open(INFRA, "w") as f:
+            json.dump(infra, f, indent=2)
+        print(json.dumps({
+            "infra": display_path(INFRA),
+            "training": training_summary,
+            "filtered_eval": display_path(EVAL),
+            "unfiltered_eval": display_path(EVAL_UNFILTERED),
+            "acceptance": report,
+        }, indent=2))
+        return
 
     if args.phase == "all":
         temp_scaler = create_target_scaler(DATA, RUNS / "target_scaler_phase4_v0_2_temp.pkl", cfg["seed"])
@@ -940,7 +1033,7 @@ def main() -> None:
         json.dump(infra, f, indent=2)
     filtered, unfiltered = evaluate_model(
         cfg, full_scaler, training_summary, infra, args.bootstrap_n,
-        target_device.type, selected_workers, unfiltered_path
+        target_device.type, selected_workers, unfiltered_path, args.mode1_sigma_scale
     )
     early_stopped = training_summary["early_stop_epoch"] is not None
     if should_run_acceptance(

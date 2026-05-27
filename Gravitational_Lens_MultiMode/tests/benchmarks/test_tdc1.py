@@ -9,17 +9,73 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import json
 import numpy as np
 import pytest
+import yaml
+
+from inversion.delay_extraction import extract_delay_from_observation
 from inversion.mode1_h0 import invert_h0, _d_delta_t
+from inversion.observation_io import from_hdf5
+
+
+ROOT = Path(__file__).parent.parent.parent
+OBS_DIR = ROOT / "data" / "observations"
+TDC1_RUNG0_H5 = OBS_DIR / "tdc1_rung0_observed.h5"
+TDC1_RUNG0_SIDECAR = OBS_DIR / "tdc1_rung0_sidecar.yaml"
+TDC1_RUNG0_DELAY_CFG = OBS_DIR / "tdc1_rung0_delay_config.json"
+
+
+def _load_mapping(path: Path) -> dict:
+    if path.suffix.lower() == ".json":
+        return json.loads(path.read_text(encoding="utf-8"))
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _delay_cfg() -> dict:
+    if TDC1_RUNG0_DELAY_CFG.exists():
+        return _load_mapping(TDC1_RUNG0_DELAY_CFG)
+    sidecar = _load_mapping(TDC1_RUNG0_SIDECAR)
+    dt_ref = float(sidecar["dt_ref_days"])
+    return {
+        "grid": {
+            "dt_try_range": [max(0.1, dt_ref - 10.0), dt_ref + 10.0],
+            "dt_try_step": 0.05,
+            "mu_try_range": [0.05, 0.95],
+            "mu_try_step": 0.02,
+        },
+        "reconstruction": {
+            "series_truncation_tol": 1.0e-5,
+            "max_series_terms": 120,
+            "interpolation": "cubic",
+        },
+        "fluctuation": {"diff_order": 1, "detrend": False},
+        "selection": {
+            "conservative": {"sigma_threshold": -1.0, "require_pair": False},
+            "relaxed": {"sigma_threshold": -0.7, "depth_fraction": 0.5},
+        },
+    }
 
 
 @pytest.mark.skipif(
-    not (Path(__file__).parent.parent.parent / "data" / "tdc1_rung0.h5").exists(),
-    reason="⚠️ tdc1_rung0.h5 미존재 — MOCK 모드"
+    not (TDC1_RUNG0_H5.exists() and TDC1_RUNG0_SIDECAR.exists()),
+    reason="⚠️ tdc1_rung0_observed.h5/sidecar 미존재 — MOCK 모드"
 )
 def test_tdc1_rung0_real():
-    pass
+    """TDC1 Rung 0 real light curves: extracted Δt must match reference."""
+    sidecar = _load_mapping(TDC1_RUNG0_SIDECAR)
+    dt_ref = float(sidecar["dt_ref_days"])
+    result = extract_delay_from_observation(
+        from_hdf5(TDC1_RUNG0_H5),
+        _delay_cfg(),
+        is_mock=False,
+        return_grid=True,
+    )
+
+    assert result["confidence_grade"] != "rejected"
+    assert abs(result["mu"]) < 1.0
+    assert np.isfinite(result["grid"]["sigma_map"]).all()
+    assert abs(result["dt_obs_days"] - dt_ref) < 0.15
 
 
 @pytest.mark.skipif(
