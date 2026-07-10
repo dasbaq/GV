@@ -1,0 +1,12 @@
+{
+  "light_curves": "data/observations/J1226/lightcurve.csv",
+  "manifest": "data/observations/J1226/manifest.yaml",
+  "output_hdf5": "data/observations/J1226.h5",
+  "references": {
+    "dt_ref_days": 33.7,
+    "dt_ref_sigma_days": 2.7
+  },
+  "report_output": "data/observations/J1226_ingest_report.json",
+  "sidecar": "data/observations/J1226/truth.yaml",
+  "sidecar_used": true
+}

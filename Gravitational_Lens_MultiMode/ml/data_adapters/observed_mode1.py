@@ -189,6 +189,10 @@ def ingest_observed_mode1(
         rays.create_dataset("theta_1", data=image_positions[0:1].astype(np.float32))
         rays.create_dataset("theta_2", data=image_positions[1:2].astype(np.float32))
         rays.create_dataset("image_positions", data=image_positions[None, :, :].astype(np.float32))
+        # H0-blind Fermat-ratio track contract.  Keep the legacy ray-path
+        # representation above for inversion compatibility.
+        observables = h5.create_group("observables")
+        observables.create_dataset("image_positions_arcsec", data=image_positions[None, :, :].astype(np.float32))
         if manifest.get("image_fluxes") is not None:
             rays.create_dataset("image_fluxes", data=_image_fluxes(manifest)[None, :].astype(np.float32))
 

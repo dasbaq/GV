@@ -151,10 +151,10 @@ def test_run_mode1_cli_writes_json(tmp_path: Path) -> None:
 
 def test_run_mode1_applies_existing_ml_checkpoint(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
-    ckpt = root / "data" / "checkpoints" / "phase4_v0_2_imgres_best.pt"
-    scaler = root / "data" / "target_scaler_phase4_v0_2.pkl"
+    ckpt = root / "data" / "checkpoints" / "phase4_v0_6_imgres_best.pt"
+    scaler = root / "data" / "target_scaler_phase4_v0_4.pkl"
     if not ckpt.exists() or not scaler.exists():
-        pytest.skip("local Phase 4 v0.2 checkpoint/scaler artifacts are not available")
+        pytest.skip("local config-compatible Phase 4 checkpoint/scaler artifacts are not available")
 
     input_path, dt_true = _write_forward_observation_h5(tmp_path / "mode1_obs.h5")
     result = run_mode1(
@@ -172,7 +172,46 @@ def test_run_mode1_applies_existing_ml_checkpoint(tmp_path: Path) -> None:
     correction = result["ml_correction"]
     assert correction["applied"] is True
     assert correction["input_adapter"]["use_image"] is False
+    assert correction["artifact_compatibility"]["expected_round"] == "phase4_v0_6"
+    assert correction["artifact_compatibility"]["expected_scaler"] == "target_scaler_phase4_v0_4.pkl"
+    assert correction["input_adapter"]["lc_normalization"]["method"] == "valid_epoch_standard_score"
+    assert correction["domain_membership"]["domain_grade"] in {
+        "in_distribution",
+        "borderline",
+    }
     assert correction["posthoc_sigma_scale"] == 1.47
+    domain_multiplier = correction["domain_sigma_scale_multiplier"]
     assert correction["sigma_H0_raw"] > 0.0
-    assert correction["sigma_H0_scaled"] == pytest.approx(correction["sigma_H0_raw"] * 1.47)
+    assert correction["sigma_H0_scaled"] == pytest.approx(
+        correction["sigma_H0_raw"] * 1.47 * domain_multiplier
+    )
+    assert result["H0"] == pytest.approx(result["H0_approx"] + correction["h0_correction"])
+
+
+def test_run_mode1_j1226_ml_correction_smoke() -> None:
+    root = Path(__file__).resolve().parents[1]
+    input_path = root / "data" / "observations" / "J1226.h5"
+    delay_cfg_path = root / "data" / "observations" / "J1226" / "delay_cfg.json"
+    ckpt = root / "data" / "checkpoints" / "phase4_v0_6_imgres_best.pt"
+    scaler = root / "data" / "target_scaler_phase4_v0_4.pkl"
+    if not (input_path.exists() and delay_cfg_path.exists() and ckpt.exists() and scaler.exists()):
+        pytest.skip("local J1226 observation and v0.6/v0.4 ML artifacts are not available")
+
+    result = run_mode1(
+        input_path,
+        approx_level=0,
+        apply_correction=True,
+        correction_checkpoint=ckpt,
+        correction_scaler=scaler,
+        correction_device="cpu",
+        delay_config=json.loads(delay_cfg_path.read_text(encoding="utf-8")),
+    )
+
+    correction = result["ml_correction"]
+    assert correction["applied"] is True
+    assert correction["domain_membership"]["domain_grade"] != "ood_abstain"
+    assert correction["domain_membership"]["benchmark_use"] is False
+    assert result["confidence_grade"] == "resolved_pairwise"
+    assert result["dt_obs_days"] == pytest.approx(33.9)
+    assert abs(correction["h0_correction_scaled_raw"]) < 10.0
     assert result["H0"] == pytest.approx(result["H0_approx"] + correction["h0_correction"])

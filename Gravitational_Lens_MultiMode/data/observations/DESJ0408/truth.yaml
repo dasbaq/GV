@@ -1,0 +1,13 @@
+# DES J0408-5354 — validation-only reference values (sidecar).
+# NEVER written into the observation HDF5; used only for the ingestion report
+# and post-run comparison against the pipeline-extracted dt_obs and inverted H0.
+#
+# Measured A-B time delay (magnitude; pipeline extraction grid uses positive delays).
+# Published: dt_AB = -112.1 +/- 2.1 days (1.8%). Other pairs (validation reference
+# only, not used by the A-B run): dt_AD = -155.5 +/- 12.8, dt_BD = -42.4 +/- 17.6.
+# H0_ref left null; fill from Shajib et al. 2020 if a point comparison is wanted.
+
+dt_ref_days: 112.1
+dt_ref_sigma_days: 2.1
+H0_ref: null              # optional
+H0_ref_sigma: null        # optional

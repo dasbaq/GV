@@ -1,0 +1,18 @@
+{
+  "grid": {
+    "dt_try_range": [1.0, 100.0],
+    "dt_try_step": 0.1,
+    "mu_try_range": [-0.99, 0.99],
+    "mu_try_step": 0.02
+  },
+  "reconstruction": {
+    "series_truncation_tol": 1.0e-6,
+    "max_series_terms": 200,
+    "interpolation": "cubic"
+  },
+  "fluctuation": {"diff_order": 1, "detrend": false},
+  "selection": {
+    "conservative": {"sigma_threshold": -2.0, "require_pair": true},
+    "relaxed": {"sigma_threshold": -1.0, "depth_fraction": 0.5}
+  }
+}

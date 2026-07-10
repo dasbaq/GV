@@ -4,6 +4,50 @@
 
 ---
 
+## [2026-07-10] H0-완전 분리 Fermat-ratio ML 병렬 트랙
+
+### 결정
+새 ML은 additive H0 correction을 학습하지 않는다. 고정 SIE에 대해
+`log(dphi_truth/dphi_SIE)` posterior를 5-component conditional mixture로 학습한다.
+
+### 운영 규칙
+- H0, H0_approx, absolute delay, light curve, sigma curve는 이 트랙의 batch에 넣지 않는다.
+- catalog의 counterfactual H0는 invariant 검증용 audit metadata이며 모델에 노출하지 않는다.
+- 기존 H0 correction은 기본 동작을 보존한다. phi posterior의 H0 변환은 diagnostic only다.
+- 정식 acceptance는 Kaggle CUDA에서 SBC/PIT, 68/95% coverage, CRPS, unfiltered 결과를 확보한 뒤 결정한다.
+
+## [2026-06-15] SIE thin-lens deflection/Fermat potential consistency
+
+### 결정
+`SIELens`의 thin-lens helper는 deflection과 Fermat potential을 같은 elliptical-potential
+근사에서 계산한다.
+
+```
+psi(theta) = theta_E * sqrt(q * x_rot^2 + y_rot^2 / q)
+alpha(theta) = grad_theta psi(theta)
+phi(theta, beta) = 0.5 * |theta - beta|^2 - psi(theta)
+```
+
+q=1에서는 SIS thin-lens 식으로 환원한다.
+
+### 운영 규칙
+- 이 식은 Mode 1/2의 빠른 SIE 표준 근사용 helper이며 full numerical truth가 아니다.
+- `fit_sie_to_images`의 Mode 1 계약은 double-lens에서 개별 `sigma_v/q/PA`의 유일한 회복이 아니라,
+  관측 image position 재현과 `dphi_rad2` 산출이다.
+- J1226처럼 두 이미지만 있는 real double은 H0를 과학 판정하지 않고 diagnostic으로 유지한다.
+
+### 결정 근거
+이전 구현은 SIE-like deflection을 쓰면서 Fermat potential은 부모 SIS 식을 상속했다.
+이는 q/position_angle을 fit에 쓰고도 `dphi_rad2`에는 같은 타원 potential을 쓰지 않는 불일치였다.
+다만 보정 후 J1226 `H0_approx`는 `58.98`로 낮게 남았으므로, 낮은 H0 diagnostic의 다음 원인은
+lens-center/astrometry, external convergence, 실제 mass model 복잡도, double-lens 과소제약으로 본다.
+
+### 관련 파일
+- `core/physics/lens_models.py`
+- `inversion/sie_fit.py`
+- `tests/test_physics_lens_models.py`
+- `tests/test_sie_fit.py`
+
 ## [2026-05-27] Mode 1 real-observation ingestion contract
 
 ### 결정

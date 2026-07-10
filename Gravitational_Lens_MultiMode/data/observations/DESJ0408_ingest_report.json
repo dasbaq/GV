@@ -1,0 +1,12 @@
+{
+  "light_curves": "data/observations/DESJ0408/lightcurve.rdb",
+  "manifest": "data/observations/DESJ0408/manifest.yaml",
+  "output_hdf5": "data/observations/DESJ0408.h5",
+  "references": {
+    "dt_ref_days": 112.1,
+    "dt_ref_sigma_days": 2.1
+  },
+  "report_output": "data/observations/DESJ0408_ingest_report.json",
+  "sidecar": "data/observations/DESJ0408/truth.yaml",
+  "sidecar_used": true
+}

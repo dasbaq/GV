@@ -1,0 +1,7 @@
+# SDSS J1226-0006 — validation-only reference (sidecar). NOT written into HDF5.
+# Published reference: |Delta t_AB| = 33.7 +/- 2.7 days.
+
+dt_ref_days: 33.7
+dt_ref_sigma_days: 2.7
+H0_ref: null              # optional
+H0_ref_sigma: null        # optional

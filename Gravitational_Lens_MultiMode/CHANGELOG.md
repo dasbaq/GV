@@ -3,6 +3,106 @@
 
 ---
 
+## [2026-07-10] — H0-완전 분리 Fermat-ratio ML 병렬 트랙
+- `ml/data/fermat_catalog.py`: physical-validity-only Phase 4 truth에서
+  `log(dphi_truth/dphi_SIE)` target과 H0 counterfactual family를 생성한다.
+  H0/절대 지연은 audit group에만 존재하며 새 dataset의 입력으로 노출되지 않는다.
+- `ml/training/fermat_dataset.py`, `ml/models/fermat_ratio.py`: 이미지, SIE 구조,
+  theta_E로 정규화된 두 상 geometry만 쓰는 5-component mixture posterior를 추가했다.
+- `pipelines/train_fermat_ratio.py`, `scripts/fermat_ratio_round.py`: 기존 Phase4
+  H0 checkpoint/scaler와 완전히 분리된 Kaggle CUDA 학습 경로를 추가했다.
+- `pipelines/run_mode1.py`: 기본 off인 `--apply-phi-correction` diagnostic을 추가했다.
+  H0 posterior는 ML 입력/label이 아닌 downstream 표시값이다.
+- 검증: `pytest -q tests/test_fermat_ratio_track.py tests/test_run_mode1_e2e.py tests/test_error_catalog.py` → 10 passed.
+- M2 로컬 생성: `data/mock/fermat_ratio_v1.h5` (1,000 physical families,
+  3,000 counterfactual audit rows, family-level compressed observation storage 6.6 MB), CPU forward finite 확인.
+
+## [2026-06-15] — SIE thin-lens Fermat potential 일관성 보정
+- `core/physics/lens_models.py`: `SIELens.deflection()`과 `SIELens.fermat_potential()`을 같은
+  elliptical-potential 근사에서 나오도록 정렬. q=1에서는 SIS 식으로 환원된다.
+- `tests/test_physics_lens_models.py`: SIE Fermat potential의 q=1 SIS 환원성과
+  potential gradient/deflection 일관성 테스트를 추가.
+- `tests/test_sie_fit.py`: double-lens SIE fit은 개별 `sigma_v`가 과소제약될 수 있으므로,
+  Mode 1 계약인 image 재현 및 `dphi_rad2` self-consistency 중심으로 검증을 조정.
+- J1226 ML-off 재실행 결과: `dt_obs_days=33.9`, `dphi_rad2=5.6597e-12`,
+  `H0_approx=58.9770`. 따라서 낮은 H0 diagnostic의 주원인은 단순 SIS potential 상속이 아니라
+  double-lens astrometry/lens-center/외부수렴/실제 lens model 복잡도 쪽으로 남는다.
+- 검증: `pytest -q tests/test_physics_lens_models.py tests/test_sie_fit.py tests/test_run_mode1_e2e.py tests/test_mode1_consistency.py tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real`
+  → 19 passed. `pytest -q tests/test_run_mode2_e2e.py tests/test_inversion_mode2.py tests/benchmarks/test_dm_recovery.py`
+  → 8 passed. `pytest -q tests/test_mode1_domain_membership.py tests/test_run_mode1_correction.py tests/test_delay_extraction_obs.py`
+  → 17 passed.
+
+## [2026-05-28] — Mode 1 ML domain-aware abstention 도입
+- `ml/inference/domain_membership.py`: Phase4 v0.4 catalog 기반 Mode 1 domain profile 생성기와
+  inference-side domain-membership scorer를 추가. truth-only field 없이 ParamEncoder feature,
+  LC tail, image availability, delay/μ guard로 `in_distribution`/`borderline`/`ood_abstain`을 판정한다.
+- `ml/inference/mode1.py`, `pipelines/run_mode1.py`: ML correction 앞단에 domain scorer를 연결.
+  `ood_abstain`이면 보정을 적용하지 않고, `borderline`이면 보정은 적용하되 sigma를 보수적으로
+  스케일하고 `benchmark_use=false`를 기록한다.
+- J1226 ML smoke는 `domain_grade=borderline`, `benchmark_use=false`,
+  `sigma_scale_multiplier=2.0`으로 기록된다. H0 benchmark 판정에는 계속 포함하지 않는다.
+- 검증: `pytest -q tests/test_mode1_domain_membership.py tests/test_run_mode1_correction.py tests/test_run_mode1_e2e.py tests/test_delay_extraction_obs.py`
+  → 21 passed. `tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real` → 1 passed.
+
+## [2026-05-28] — SDSS J1226 real Δt benchmark 승격
+- `data/observations/sdss_j1226_observed.h5`,
+  `data/observations/sdss_j1226_sidecar.yaml`,
+  `data/observations/sdss_j1226_delay_config.json` 공식 benchmark alias를 추가.
+- `tests/benchmarks/test_sdss_j1226.py`: real benchmark 판정을 H0 fallback 기준에서
+  sidecar의 `dt_ref_days=33.7±2.7` 기준 Δt PASS로 변경. `H0_ref`가 없으면
+  H0는 finite diagnostic으로만 확인한다.
+- 검증: `pytest -q tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real`
+  → 1 passed. 전체 `tests/benchmarks/test_sdss_j1226.py` → 2 passed.
+- 직접 실행: `run_mode1` real 경로에서 `dt_obs_days=33.9`,
+  `confidence_grade=resolved_pairwise`, `H0_approx=58.9344` 확인.
+- ML smoke는 benchmark 판정에서 제외하고, v0.6/v0.4 pairing으로
+  `h0_correction_scaled_raw=0.4281`, `H0=94.4426` 실행 가능성만 확인.
+
+## [2026-05-27] — Mode 1 ML 보정 실행 안정화
+- `pipelines/run_mode1.py`: Mode 1 ML correction 기본 scaler를 v0.6 checkpoint의 정식
+  pairing인 `data/target_scaler_phase4_v0_4.pkl`로 변경.
+- `ml/inference/mode1.py`: 실측 관측 광도곡선 입력을 valid epoch 기준 표준화
+  (`F -> (F-mean)/std`, `sigma -> sigma/std`)하고 normalization metadata를 JSON에 기록.
+- `ml/inference/mode1.py`: checkpoint/config shape mismatch를 PyTorch raw error 대신
+  phase4_v0_6 checkpoint + phase4_v0_4 scaler 사용을 안내하는 compatibility error로 조기 차단.
+- `tests/test_run_mode1_e2e.py`, `tests/test_run_mode1_correction.py`: J1226
+  `--apply-correction` smoke, v0.6/v0.4 artifact pairing, legacy checkpoint error 회귀 테스트 추가/갱신.
+- 검증: J1226 `run_mode1 --apply-correction` 실행 완료.
+  `h0_correction_scaled_raw=0.4281`, `H0_approx=58.9344`, `H0=94.4426`,
+  `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise`.
+- 검증: `pytest -q tests/test_run_mode1_e2e.py tests/test_run_mode1_correction.py tests/test_delay_extraction_obs.py`
+  → 13 passed. `python -m py_compile pipelines/run_mode1.py ml/inference/mode1.py` → pass.
+
+## [2026-05-27] — J1226 Mode 1 rejected 해소
+- `inversion/delay_extraction.py`: unresolved joint-curve Bag/Shafieloo 경로가
+  실측 resolved A/B 광도곡선에서 `rejected`일 때만 동작하는 pairwise correlation
+  fallback을 추가. Δt 후보는 벡터화로 일괄 평가하고, flux-ratio proxy는 `|mu| < 1`을
+  검증한다.
+- `ml/inference/mode1.py`: 현재 v0.6 `MultiModalErrorCorrector` forward signature에 맞춰
+  `use_image` 전달을 제거하고 Mode 1 image tensor를 단일 채널로 정리.
+- `tests/test_delay_extraction_obs.py`: `data/observations/J1226.h5`가 있을 때
+  `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise`로 rejected가 아님을 확인하는
+  회귀 테스트 추가.
+- `tests/test_run_mode1_e2e.py`: 현재 `config/ml.yaml`과 호환되는 v0.6 checkpoint로
+  ML correction smoke fixture를 갱신.
+- 검증: `python -m pipelines.run_mode1 --input data/observations/J1226.h5 --apply-correction
+  --correction-checkpoint data/checkpoints/phase4_v0_6_imgres_best.pt --correction-device cpu
+  --delay-config data/observations/J1226/delay_cfg.json --output /tmp/j1226_mode1.json`
+  → 실행 완료, `confidence_grade=resolved_pairwise`, `dt_obs_days=33.9`.
+- 검증: `pytest -q tests/test_delay_extraction_obs.py tests/test_run_mode1_e2e.py` → 7 passed.
+
+## [2026-05-27] — SDSS J1226 Euler 광도곡선 입력
+- `data/observations/J1226/lightcurve.csv`: 사용자 제공 Euler/EulerCAM A/B magnitude 광도곡선
+  483 epoch를 추가.
+- `data/observations/J1226/manifest.yaml`: J1226 CSV 컬럼 매핑을 확정하고
+  spectroscopic redshift `z_lens=0.517`, `z_source=1.123`을 입력.
+- `data/observations/J1226/truth.yaml`: validation-only reference로
+  `|dt_AB|=33.7±2.7 days`를 기록. HDF5 입력에는 쓰지 않는다.
+- `data/observations/J1226.h5` 및 `data/observations/J1226_ingest_report.json` 생성:
+  magnitude→linear flux 변환, A/B 공통 time grid, sidecar leak-free report를 확인.
+- 검증: `pytest -q tests/test_observed_mode1_ingestion.py` → 8 passed.
+  `run_mode1` 직접 실행은 현재 time-delay extraction rejected로 중단되어 benchmark alias는 만들지 않음.
+
 ## [2026-05-27] — Mode 1 실제 관측 ingestion 경로 추가
 - `ml/data_adapters/observed_mode1.py`: CSV/TSV/RDB 광도곡선 + YAML manifest를
   Mode 1 observation HDF5로 변환하는 adapter 추가. magnitude 입력은 선형 flux로 변환하고

@@ -145,6 +145,10 @@ head를 가지며 인코더는 공유한다.
 | 속도 분산 | anisotropic | **isotropic** (β = 0) |
 | 광원 | (Mode 3 삭제됨 — 해당 없음) | (해당 없음) |
 
+Thin-lens SIE helper는 deflection과 Fermat potential이 같은 elliptical-potential
+근사에서 나오도록 고정한다. 이는 full numerical truth가 아니라 Mode 1/2의 빠른
+표준 근사이며, q=1에서는 SIS 식으로 환원된다.
+
 ### 왜 SIE 인가
 
 1. 강한 렌즈 분야의 **표준 모델** — 대부분의 관측 분석이 SIE 또는 그 확장으로 fit
@@ -165,6 +169,27 @@ head를 가지며 인코더는 공유한다.
 
 표준 근사가 고정되어 있으므로 ML 모델은 어떤 단순화가 적용됐는지 알 필요가 없다.
 **근사 axes one-hot 같은 조건부 입력은 사용하지 않는다.**
+
+### H0-독립 Fermat-ratio 연구 트랙
+
+기존 Mode 1 H0 correction과 별도로, `y_phi = log(dphi_truth/dphi_SIE)`의 조건부
+posterior를 학습한다. 이 트랙의 입력은 SIE 구조 파라미터, `theta_E`로 정규화한 두 상 위치,
+관측 이미지뿐이다. H0, H0_approx, 절대 시간 지연, 광도곡선은 입력·label·loss에서 제외한다.
+`run_mode1 --apply-phi-correction`의 H0 표시는 posterior를 downstream 물리식에 넣은
+diagnostic일 뿐, benchmark 판정에는 사용하지 않는다.
+
+### Mode 1 ML inference reliability metadata
+
+Mode 1 ML 보정은 point estimate를 적용하기 전에 inference-side domain-membership을
+평가한다. 이 계층은 Phase4 v0.4 catalog profile과 실측 입력에서 직접 만들 수 있는
+ParamEncoder feature, 광도곡선 tail, image availability, Δt/μ guard만 사용한다.
+`mu_truth`, `dphi_sie/dphi_truth`, correction label 같은 truth-only 값은 사용하지 않는다.
+
+결과 JSON의 `ml_correction.domain_membership`에는 `domain_score`, `domain_grade`
+(`in_distribution`, `borderline`, `ood_abstain`), `failed_checks`,
+`sigma_scale_regime`, `profile_artifact`, `benchmark_use`가 기록된다. `borderline`은
+보정을 적용할 수 있지만 conservative sigma multiplier와 `benchmark_use=false`를
+동반하며, `ood_abstain`은 H0 point correction을 적용하지 않는다.
 
 ---
 

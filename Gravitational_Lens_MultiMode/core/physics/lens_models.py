@@ -189,11 +189,28 @@ class SIELens(SISLens):
         """Thin-lens sanity-check SIE-like deflection [arcsec]."""
         th = np.asarray(theta, dtype=float)
         xy = _rotate_xy(th, self.position_angle)
-        ell = np.sqrt((self.q * xy[..., 0:1]) ** 2 + (xy[..., 1:2] / self.q) ** 2)
+        ell = np.sqrt(self.q * xy[..., 0:1] ** 2 + xy[..., 1:2] ** 2 / self.q)
         alpha_rot = self.einstein_radius() * np.concatenate(
             [self.q * xy[..., 0:1], xy[..., 1:2] / self.q], axis=-1
         ) / np.maximum(ell, self._eps)
         return _rotate_xy(alpha_rot, -self.position_angle)
+
+    def fermat_potential(self, theta: np.ndarray, beta: np.ndarray) -> np.ndarray:
+        """Thin-lens SIE-like Fermat potential [radian^2].
+
+        Units: ``theta`` and ``beta`` are [arcsec], return is [rad²]. SIE 표준
+        근사 가정: this uses the same elliptical potential whose angular
+        gradient gives ``SIELens.deflection``. For q=1 it reduces to the SIS
+        expression.
+        """
+        th = _theta_rad(theta)
+        be = _theta_rad(beta)
+        xy = _rotate_xy(th, self.position_angle)
+        theta_e = self.einstein_radius() * constants()["arcsec_to_rad"]
+        psi = theta_e * np.sqrt(
+            self.q * xy[..., 0] ** 2 + xy[..., 1] ** 2 / self.q
+        )
+        return 0.5 * np.sum((th - be) ** 2, axis=-1) - psi
 
 
 @dataclass

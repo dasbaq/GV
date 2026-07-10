@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,8 +12,11 @@ from inversion.delay_extraction import (
     _reconstruct_grid_vectorized,
     extract_delay_from_observation,
 )
-from inversion.observation_io import ObservedLensSystem, ObservedLightCurves
+from inversion.observation_io import ObservedLensSystem, ObservedLightCurves, from_hdf5
 from tests.benchmarks._mock_data import make_system6_synthetic
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cfg() -> dict:
@@ -87,3 +92,20 @@ def test_reconstruction_grid_has_no_dt_mu_loop() -> None:
     tree = ast.parse(inspect.getsource(_reconstruct_grid_vectorized))
     loops = [node for node in ast.walk(tree) if isinstance(node, (ast.For, ast.While))]
     assert loops == []
+
+
+def test_j1226_resolved_pairwise_fallback_is_not_rejected() -> None:
+    obs_path = ROOT / "data" / "observations" / "J1226.h5"
+    cfg_path = ROOT / "data" / "observations" / "J1226" / "delay_cfg.json"
+    if not (obs_path.exists() and cfg_path.exists()):
+        pytest.skip("local J1226 observation artifact is not available")
+
+    obs = from_hdf5(obs_path)
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    result = extract_delay_from_observation(obs, cfg, is_mock=False, return_grid=False)
+
+    assert result["mock"] is False
+    assert result["confidence_grade"] == "resolved_pairwise"
+    assert result["diagnostics"]["fallback"] == "resolved_pairwise_correlation"
+    assert result["dt_obs_days"] == pytest.approx(33.9)
+    assert abs(result["mu"]) < 1.0

@@ -30,6 +30,9 @@ from ml.training.feature_schema import (
 )
 from ml.utils.mask import make_lc_mask
 
+# LC 기반 Δt 추출의 기대 상대 불확도 (4.5%). dt_uncertainty 부재/과소 시 sigma 하한으로 사용.
+_DT_LC_REL_SIGMA_EXPECTED = 0.045
+
 # Σ 곡선 계산 — Phase 1 모듈 미구현 시 NotImplementedError
 _SIGMA_CURVE_AVAILABLE = False
 try:

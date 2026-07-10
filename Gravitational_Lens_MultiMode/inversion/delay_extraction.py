@@ -152,6 +152,110 @@ def _local_dt_uncertainty(dt_grid: np.ndarray, sigma_map: np.ndarray, grid_index
     return float(0.5 * (np.max(dt_grid[support]) - np.min(dt_grid[support])))
 
 
+def _resolved_pairwise_delay(
+    light_curves: ObservedLightCurves,
+    dt_grid: np.ndarray,
+    mu_grid: np.ndarray,
+) -> dict[str, Any] | None:
+    """Estimate Δt from resolved two-image light curves by correlation.
+
+    Units: input times and returned delay are [days], fluxes are arbitrary
+    linear units. SIE 표준 근사 가정: this fallback only estimates the public
+    observation-side delay for a resolved A/B pair and does not alter the fixed
+    SIE lens model downstream. The Δt scan is vectorized over the full grid,
+    and the reported flux-ratio proxy is verified to satisfy ``|mu| < 1``.
+    """
+
+    F = _as_2d(light_curves.F, "light_curves.F")
+    t = _as_2d(light_curves.t_obs, "light_curves.t_obs")
+    sigma = _as_2d(light_curves.sigma_noise, "light_curves.sigma_noise")
+    if F.shape[0] != 2:
+        return None
+    if t.shape[0] == 1:
+        t = np.repeat(t, F.shape[0], axis=0)
+    if sigma.shape[0] == 1:
+        sigma = np.repeat(sigma, F.shape[0], axis=0)
+    if F.shape != t.shape or F.shape != sigma.shape:
+        return None
+    if not np.allclose(t[0], t[1], rtol=0.0, atol=1.0e-8):
+        return None
+
+    order = np.argsort(t[0])
+    t_ref = t[0, order]
+    primary = F[0, order]
+    secondary = F[1, order]
+    if t_ref.size < 8 or np.nanstd(primary) <= 0.0 or np.nanstd(secondary) <= 0.0:
+        return None
+
+    signs = np.array([-1.0, 1.0], dtype=float)
+    sample_points = t_ref[None, None, :] + signs[:, None, None] * dt_grid[None, :, None]
+    shifted = interp1d(
+        t_ref,
+        secondary,
+        kind="linear",
+        bounds_error=False,
+        fill_value=np.nan,
+    )(sample_points)
+    valid = np.isfinite(shifted)
+    counts = np.sum(valid, axis=-1)
+    y = primary[None, None, :]
+    x = np.where(valid, shifted, 0.0)
+    y_masked = np.where(valid, y, 0.0)
+
+    x_mean = np.divide(np.sum(x, axis=-1), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+    y_mean = np.divide(
+        np.sum(y_masked, axis=-1),
+        counts,
+        out=np.zeros_like(counts, dtype=float),
+        where=counts > 0,
+    )
+    x_centered = np.where(valid, shifted - x_mean[..., None], 0.0)
+    y_centered = np.where(valid, y - y_mean[..., None], 0.0)
+    numerator = np.sum(x_centered * y_centered, axis=-1)
+    denominator = np.sqrt(np.sum(x_centered * x_centered, axis=-1) * np.sum(y_centered * y_centered, axis=-1))
+    corr = np.divide(numerator, denominator, out=np.full_like(numerator, -np.inf), where=denominator > 0.0)
+    corr = np.where(counts >= max(8, int(0.25 * t_ref.size)), corr, -np.inf)
+    if not np.isfinite(corr).any():
+        return None
+
+    sign_idx, dt_idx = np.unravel_index(int(np.nanargmax(corr)), corr.shape)
+    corr_best = float(corr[sign_idx, dt_idx])
+    if corr_best < 0.5:
+        return None
+
+    profile = corr[sign_idx]
+    support = np.isfinite(profile) & (profile >= corr_best - 0.01)
+    if np.count_nonzero(support) >= 2:
+        dt_unc = float(0.5 * (np.max(dt_grid[support]) - np.min(dt_grid[support])))
+    else:
+        dt_unc = float(np.median(np.diff(dt_grid))) if dt_grid.size > 1 else np.nan
+
+    med = np.array([np.nanmedian(np.abs(primary)), np.nanmedian(np.abs(secondary))], dtype=float)
+    if not np.all(np.isfinite(med)) or np.max(med) <= 0.0:
+        return None
+    mu_est = float(np.min(med) / np.max(med))
+    nearest_mu = float(mu_grid[int(np.argmin(np.abs(mu_grid - mu_est)))])
+    if not abs(nearest_mu) < 1.0:
+        raise ValueError("|mu| < 1 is required for resolved pairwise fallback")
+
+    return {
+        "dt_obs_days": float(dt_grid[dt_idx]),
+        "dt_uncertainty_days": max(dt_unc, float(np.median(np.diff(dt_grid))) if dt_grid.size > 1 else 0.0),
+        "mu": nearest_mu,
+        "mu_uncertainty": float(np.median(np.diff(mu_grid))) if mu_grid.size > 1 else np.nan,
+        "confidence_grade": "resolved_pairwise",
+        "sigma_min": -corr_best,
+        "n_minima_found": int(np.sum(np.isfinite(profile))),
+        "diagnostics": {
+            "fallback": "resolved_pairwise_correlation",
+            "correlation": corr_best,
+            "sign": float(signs[sign_idx]),
+            "overlap_epochs": int(counts[sign_idx, dt_idx]),
+            "profile_max": corr_best,
+        },
+    }
+
+
 def extract_delay_from_observation(
     observation: ObservedLensSystem | ObservedLightCurves,
     cfg: dict[str, Any] | None = None,
@@ -195,6 +299,7 @@ def extract_delay_from_observation(
     best = select_best_minimum(minima, selection)
 
     if best is None:
+        fallback = _resolved_pairwise_delay(light_curves, dt_grid, mu_grid)
         result = {
             "dt_obs_days": np.nan,
             "dt_uncertainty_days": np.nan,
@@ -209,6 +314,14 @@ def extract_delay_from_observation(
                 "sigma_min": float(np.nanmin(sigma_map)),
             },
         }
+        if fallback is not None:
+            result.update(fallback)
+            result["mock"] = bool(is_mock)
+            result["diagnostics"] = {
+                **fallback["diagnostics"],
+                "joint_sigma_min": float(np.nanmin(sigma_map)),
+                "joint_minima": minima,
+            }
     else:
         grid_index = tuple(best["grid_index"])
         dt_unc = _local_dt_uncertainty(dt_grid, sigma_map, grid_index)

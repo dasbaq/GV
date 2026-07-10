@@ -1,0 +1,29 @@
+# DES J0408-5354 — Mode 1 observation manifest (A-B pair)
+# Light curves: COSMOGRAIL (EulerCAM + WFI), images A/B/D monitored.
+# Image positions: Shajib et al. 2019/2020 MNRAS model priors (G1-centered, arcsec),
+#                  midpoint of the prior interval used as the measured position.
+# 1st E2E uses the A-B pair only; D and full-quad joint inversion are deferred.
+
+name: DES_J0408-5354
+source: COSMOGRAIL
+
+# Spectroscopic redshifts: z_lens = G (main lens galaxy), z_source = quasar.
+# (Background source S2 at z=2.228 is unrelated to the A-B quasar pair; unused.)
+z_lens: 0.5969
+z_source: 2.375
+
+# G1-centered (delta_alpha, delta_delta) [arcsec], order must match `series` (A, B).
+# Sign convention follows the published table verbatim; if SIE fit residual is
+# abnormally large, revisit the delta_alpha sign (RA handedness).
+image_positions:
+  - [1.944, -1.572]    # A : dalpha (1.940+1.948)/2, ddelta (-1.576-1.568)/2
+  - [-1.814, 0.2765]   # B : dalpha (-1.819-1.809)/2, ddelta (0.263+0.290)/2
+
+time_zero_at_first: true
+time_grid_atol_days: 1.0e-8
+
+columns:
+  time: mhjd
+  series:
+    - {name: A, unit: magnitude, mag: mag_A, mag_err: magerr_A}
+    - {name: B, unit: magnitude, mag: mag_B, mag_err: magerr_B}

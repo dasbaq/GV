@@ -28,6 +28,46 @@ def test_sie_q_validation_and_docstring():
     assert "SIE 표준 근사 가정" in (SIELens.__doc__ or "")
 
 
+def test_sie_fermat_potential_matches_sis_when_q_is_one():
+    sie = SIELens(sigma_v=220.0, q=1.0, z_lens=0.3, z_source=1.5)
+    sis = SISLens(sigma_v=220.0, z_lens=0.3, z_source=1.5)
+    theta = np.array([[0.7, 0.2], [-0.4, 0.1]], dtype=float)
+    beta = np.array([0.05, -0.02], dtype=float)
+    assert np.allclose(sie.fermat_potential(theta, beta), sis.fermat_potential(theta, beta))
+
+
+def test_sie_fermat_potential_gradient_matches_deflection():
+    lens = SIELens(
+        sigma_v=230.0,
+        q=0.7,
+        position_angle=0.4,
+        z_lens=0.35,
+        z_source=1.7,
+    )
+    theta = np.array([0.8, 0.35], dtype=float)
+    beta = np.zeros(2, dtype=float)
+    eps = 1.0e-5
+
+    def psi(theta_arcsec: np.ndarray) -> float:
+        from core.physics.config import constants
+
+        th = np.asarray(theta_arcsec, dtype=float)
+        th_rad = th * constants()["arcsec_to_rad"]
+        be_rad = beta * constants()["arcsec_to_rad"]
+        return 0.5 * np.sum((th_rad - be_rad) ** 2) - float(lens.fermat_potential(th, beta))
+
+    grad = np.array(
+        [
+            (psi(theta + np.array([eps, 0.0])) - psi(theta - np.array([eps, 0.0]))) / (2.0 * eps),
+            (psi(theta + np.array([0.0, eps])) - psi(theta - np.array([0.0, eps]))) / (2.0 * eps),
+        ]
+    )
+    from core.physics.config import constants
+
+    alpha_from_potential = grad / constants()["arcsec_to_rad"] ** 2
+    assert np.allclose(alpha_from_potential, lens.deflection(theta), rtol=1.0e-5, atol=1.0e-6)
+
+
 def test_point_mass_lens_fields_and_einstein_radius():
     lens = PointMassLens(mass_msun=1.0e11, z_lens=0.3, z_source=1.5)
     pos = np.array([[1.0e20, 0.0, 0.0]])

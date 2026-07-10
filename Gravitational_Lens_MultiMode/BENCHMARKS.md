@@ -3,6 +3,127 @@
 
 ---
 
+## [2026-07-10] H0-독립 Fermat-ratio track CPU smoke
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| physical-only catalog + counterfactual family | `fermat_ratio_v1.h5`, 1,000 family / 3,000 rows | PASS |
+| mixture posterior forward/backward | finite | PASS |
+| PIT/coverage evaluator | CPU smoke 실행 | PASS |
+| Kaggle SBC/unfiltered acceptance | 미실행 | PENDING |
+
+검증: `pytest -q tests/test_fermat_ratio_track.py tests/test_run_mode1_e2e.py tests/test_error_catalog.py` → 10 passed.
+M2 equivalence: `python scripts/fermat_ratio_round.py --phase equivalence --catalog data/mock/fermat_ratio_v1.h5 --families 1000`
+→ CPU forward finite, `|mu|_max=0.9793 < 1`.
+
+## [2026-06-15] SDSS J1226 SIE-consistent H0 diagnostic
+
+SIE thin-lens deflection과 Fermat potential을 같은 elliptical-potential 근사로 정렬한 뒤
+J1226 Mode 1을 재실행했다. 공식 판정은 계속 Δt 기준이며, H0는 reference 부재로 diagnostic이다.
+
+| 항목 | 결과 | 기준 | 판정 |
+|------|------|------|------|
+| Δt extraction | `dt_obs_days=33.9` | `33.7±2.7` days | PASS |
+| confidence | `resolved_pairwise` | not rejected | PASS |
+| SIE dphi | `5.6597e-12 rad²` | finite positive | diagnostic |
+| H0 approximate | `58.9770` | H0 reference 없음 | diagnostic |
+| ML corrected H0 | `93.4195` | benchmark 제외 | smoke only |
+| ML domain grade | `borderline`, `benchmark_use=false` | H0 판정 제외 | diagnostic |
+
+검증 명령:
+- `python -m pipelines.run_mode1 --input data/observations/sdss_j1226_observed.h5 --delay-config data/observations/sdss_j1226_delay_config.json --output /tmp/j1226_mode1_sie_consistent.json`
+  → `H0_approx=58.9770`, `dphi_rad2=5.6597e-12`.
+- `python -m pipelines.run_mode1 --input data/observations/sdss_j1226_observed.h5 --apply-correction --correction-checkpoint data/checkpoints/phase4_v0_6_imgres_best.pt --correction-scaler data/target_scaler_phase4_v0_4.pkl --correction-device cpu --delay-config data/observations/sdss_j1226_delay_config.json --output /tmp/j1226_mode1_ml_sie_consistent.json`
+  → `H0=93.4195`, `h0_correction_scaled_raw=0.3504`, `domain_grade=borderline`.
+- `pytest -q tests/test_physics_lens_models.py tests/test_sie_fit.py tests/test_run_mode1_e2e.py tests/test_mode1_consistency.py tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real`
+  → 19 passed.
+- `pytest -q tests/test_run_mode2_e2e.py tests/test_inversion_mode2.py tests/benchmarks/test_dm_recovery.py`
+  → 8 passed.
+
+해석:
+- 낮은 H0 diagnostic은 단순히 SIE fit 후 SIS Fermat potential을 상속해서 생긴 문제가 아니었다.
+- 다음 원인 후보는 lens-center/astrometry 민감도, 외부수렴, 실제 mass-model 복잡도,
+  double-lens SIE 과소제약이다.
+
+## [2026-05-28] SDSS J1226 real Δt benchmark
+
+`data/observations/J1226.h5`를 공식 benchmark alias
+`data/observations/sdss_j1226_observed.h5`로 승격했다. Sidecar에는
+`dt_ref_days=33.7`, `dt_ref_sigma_days=2.7`만 있고 H0 reference는 없으므로,
+공식 판정은 Δt 기준으로만 수행한다.
+
+| 항목 | 결과 | 기준 | 판정 |
+|------|------|------|------|
+| 입력 artifact | `sdss_j1226_observed.h5` + sidecar + delay config | 존재 | PASS |
+| Δt extraction | `dt_obs_days=33.9` | `33.7±2.7` days | PASS |
+| confidence | `resolved_pairwise` | not rejected | PASS |
+| H0 approximate | `58.9344` | H0 reference 없음 | diagnostic |
+| ML corrected H0 | `94.4426` | benchmark 제외 | smoke only |
+| ML domain grade | `borderline`, `benchmark_use=false` | H0 판정 제외 | diagnostic |
+| ML sigma regime | `borderline_conservative`, multiplier `2.0` | 보수적 uncertainty | diagnostic |
+
+검증 명령:
+- `pytest -q tests/benchmarks/test_sdss_j1226.py::test_sdss_j1226_real` → 1 passed.
+- `pytest -q tests/benchmarks/test_sdss_j1226.py` → 2 passed.
+- `python -m pipelines.run_mode1 --input data/observations/sdss_j1226_observed.h5 --delay-config data/observations/sdss_j1226_delay_config.json --output /tmp/j1226_mode1_real.json`
+  → `dt_obs_days=33.9`, `H0_approx=58.9344`.
+- `python -m pipelines.run_mode1 --input data/observations/sdss_j1226_observed.h5 --apply-correction --correction-checkpoint data/checkpoints/phase4_v0_6_imgres_best.pt --correction-scaler data/target_scaler_phase4_v0_4.pkl --correction-device cpu --delay-config data/observations/sdss_j1226_delay_config.json --output /tmp/j1226_mode1_ml.json`
+  → `h0_correction_scaled_raw=0.4281`, `H0=94.4426`,
+  `domain_grade=borderline`, `benchmark_use=false`.
+
+주의:
+- H0 reference가 없으므로 COSMOGRAIL 1σ H0 PASS/FAIL은 판정하지 않는다.
+- ML 보정값은 실행 가능성 smoke이며 과학 benchmark 판정값으로 사용하지 않는다.
+- domain-aware abstention은 실행 신뢰도 metadata이며, 현재 J1226 H0 과학 판정으로 사용하지 않는다.
+
+## [2026-05-27] J1226 Mode 1 ML correction smoke
+
+`data/observations/J1226.h5`에서 Mode 1 `--apply-correction` 실행 안정화를 확인했다.
+v0.6 checkpoint의 정식 pairing은 v0.4 scaler이므로
+`data/checkpoints/phase4_v0_6_imgres_best.pt`와
+`data/target_scaler_phase4_v0_4.pkl`를 사용했다.
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| J1226 delay extraction | `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise` | PASS |
+| ML correction 실행 | `applied=true`, JSON 출력 완료 | PASS |
+| LC normalization | `valid_epoch_standard_score`, `n_valid=483` | PASS |
+| raw scaled correction | `h0_correction_scaled_raw=0.4281` | 폭주 없음 |
+| H0 output | `H0_approx=58.9344`, `H0=94.4426` | benchmark 판정 아님 |
+
+검증 명령:
+- `python -m pipelines.run_mode1 --input data/observations/J1226.h5 --apply-correction --correction-checkpoint data/checkpoints/phase4_v0_6_imgres_best.pt --correction-scaler data/target_scaler_phase4_v0_4.pkl --correction-device cpu --delay-config data/observations/J1226/delay_cfg.json --output /tmp/j1226_mode1_ml.json`
+  → 실행 완료.
+- `pytest -q tests/test_run_mode1_e2e.py tests/test_run_mode1_correction.py tests/test_delay_extraction_obs.py`
+  → 13 passed.
+- `python -m py_compile pipelines/run_mode1.py ml/inference/mode1.py` → pass.
+
+주의:
+- 이번 검증은 실행 안정화 smoke이며, COSMOGRAIL 1σ H0 benchmark 판정이나
+  `sdss_j1226_observed.h5` alias 승격 근거로 사용하지 않는다.
+
+## [2026-05-27] J1226 Mode 1 rejected 해소 검증
+
+`data/observations/J1226.h5`의 resolved A/B 광도곡선에서 기존 joint-curve
+time-delay extraction이 `rejected`되던 문제를 pairwise correlation fallback으로 해소했다.
+truth sidecar 값은 HDF5 입력과 추출 로직에 사용하지 않았다.
+
+| 항목 | 결과 | 판정 |
+|------|------|------|
+| J1226 delay extraction | `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise` | PASS |
+| `|mu| < 1` | `mu_time_delay=0.45` | PASS |
+| Mode 1 `--apply-correction` 실행 | JSON 출력 완료, rejected 없음 | PASS |
+| H₀/COSMOGRAIL 1σ benchmark | alias 승격 전 | 보류 |
+
+검증 명령:
+- `python -m pipelines.run_mode1 --input data/observations/J1226.h5 --apply-correction --correction-checkpoint data/checkpoints/phase4_v0_6_imgres_best.pt --correction-device cpu --delay-config data/observations/J1226/delay_cfg.json --output /tmp/j1226_mode1.json`
+  → 실행 완료, `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise`.
+- `pytest -q tests/test_delay_extraction_obs.py tests/test_run_mode1_e2e.py` → 7 passed.
+
+주의:
+- v0.6 checkpoint는 v0.4 scaler와 pair로 사용해야 한다. ML correction point estimate는
+  별도 smoke에서만 확인하며 benchmark 판정값으로 사용하지 않는다.
+
 ## [2026-05-27] Mode 1 실제 관측 ingestion + benchmark wiring
 
 실제 원본 관측 파일은 아직 로컬에 없어 TDC1/SDSS real benchmark 판정은 skip이다.

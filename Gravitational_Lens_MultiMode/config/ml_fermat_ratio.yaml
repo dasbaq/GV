@@ -1,0 +1,10 @@
+seed: 1337
+model:
+  d_model: 128
+  components: 5
+  dropout: 0.1
+training:
+  batch_size: 32
+  lr: 0.0003
+  weight_decay: 0.0001
+  epochs: 100

@@ -1,5 +1,4 @@
-# CLAUDE.md
-
+@RTK.md
 ## 세션 시작 — 파일 읽기 순서
 
 1. STATUS.md 전체 읽기 → 현재 Phase와 다음 작업 파악

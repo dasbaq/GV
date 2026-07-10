@@ -168,29 +168,89 @@ def test_v0_5_checkpoint_incompatible_with_v0_6_model():
         model.load_state_dict(sd, strict=True)
 
 
-def test_apply_correction_graceful_skip_without_features():
+def test_apply_correction_graceful_skip_without_features(tmp_path: Path):
     from pipelines.run_mode1 import _apply_ml_correction
+    from tests.test_run_mode1_e2e import _mode1_delay_cfg, _write_forward_observation_h5
+    from inversion.delay_extraction import extract_delay_from_observation
+    from inversion.mode1_h0 import invert_h0
+    from inversion.observation_io import from_hdf5
+    from inversion.sie_fit import fit_sie_to_images
 
-    # checkpoint가 없으면 skip
+    input_path, dt_true = _write_forward_observation_h5(tmp_path / "mode1_skip_smoke.h5")
+    observation = from_hdf5(input_path)
+    delay = extract_delay_from_observation(
+        observation,
+        _mode1_delay_cfg(dt_true),
+        is_mock=True,
+        return_grid=False,
+    )
+    sie_fit = fit_sie_to_images(
+        observation.image_positions,
+        observation.z_lens,
+        observation.z_source,
+        cosmology={"H0": 70.0},
+    )
+    h0_approx = float(
+        invert_h0(
+            np.array([delay["dt_obs_days"]], dtype=float),
+            np.array([sie_fit["dphi_rad2"]], dtype=float),
+            observation.z_lens,
+            observation.z_source,
+            approx_level=0,
+            n_bootstrap=10,
+        )["H0"]
+    )
+
     h0, info = _apply_ml_correction(
-        70.0,
+        h0_approx,
         apply_correction=True,
         checkpoint=None,
-        feature_spec=None,
-        scaler_path=None,
-        config_path=None,
+        scaler=SCALER,
+        config=CONFIG,
+        device="cpu",
+        correction_approx_level=1,
+        mode1_sigma_scale=1.0,
+        observation=observation,
+        input_path=input_path,
+        system_index=0,
+        delay=delay,
+        sie_fit=sie_fit,
     )
-    assert h0 == 70.0 and info["applied"] is False
+    assert h0 == h0_approx and info["applied"] is False
 
-    # checkpoint는 있으나 feature_spec이 없으면 skip(reason 명시)
     if CKPT_V05.exists():
         h0b, infob = _apply_ml_correction(
-            70.0,
+            h0_approx,
             apply_correction=True,
             checkpoint=CKPT_V05,
-            feature_spec=None,
-            scaler_path=SCALER if SCALER.exists() else None,
-            config_path=CONFIG,
+            scaler=ROOT / "data" / "missing_scaler.pkl",
+            config=CONFIG,
+            device="cpu",
+            correction_approx_level=1,
+            mode1_sigma_scale=1.0,
+            observation=observation,
+            input_path=input_path,
+            system_index=0,
+            delay=delay,
+            sie_fit=sie_fit,
         )
-        assert h0b == 70.0 and infob["applied"] is False
-        assert "unavailable" in infob["reason"]
+        assert h0b == h0_approx and infob["applied"] is False
+        assert "scaler not found" in infob["reason"]
+
+
+@pytest.mark.skipif(not CKPT_V04.exists(), reason="v0.4 checkpoint not present")
+def test_legacy_checkpoint_gets_actionable_compatibility_error(tmp_path: Path) -> None:
+    from pipelines.run_mode1 import run_mode1
+    from tests.test_run_mode1_e2e import _mode1_delay_cfg, _write_forward_observation_h5
+
+    input_path, dt_true = _write_forward_observation_h5(tmp_path / "mode1_obs.h5")
+    with pytest.raises(RuntimeError, match="phase4_v0_6 checkpoint"):
+        run_mode1(
+            input_path,
+            approx_level=0,
+            apply_correction=True,
+            correction_checkpoint=CKPT_V04,
+            correction_scaler=SCALER,
+            correction_device="cpu",
+            delay_config=_mode1_delay_cfg(dt_true),
+        )

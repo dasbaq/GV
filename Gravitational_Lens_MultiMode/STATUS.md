@@ -1,7 +1,7 @@
 # STATUS.md
 > 매 세션 읽음. 작업 완료 시 업데이트.
-
-마지막 업데이트: 2026-05-27
+@RTK.md
+마지막 업데이트: 2026-06-15
 
 ---
 
@@ -111,6 +111,19 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 [ ] ml/training/losses.py          — Mode별 task loss + physics + calibration
 [ ] ml/training/trainer.py         — multi-task 훈련 루프
 [ ] pipelines/train_corrector.py   — CLI 엔트리포인트
+
+### 5-C. H0-독립 Fermat-ratio 연구 트랙
+
+```
+[x] ml/data/fermat_catalog.py       — physical-validity-only, counterfactual H0 audit catalog
+[x] ml/training/fermat_dataset.py   — H0/delay/LC 없는 input schema
+[x] ml/models/fermat_ratio.py       — 5-component posterior mixture
+[x] pipelines/train_fermat_ratio.py — Kaggle CUDA training entrypoint
+[x] scripts/fermat_ratio_round.py   — M2 equivalence / Kaggle train dispatcher
+[x] pipelines/run_mode1.py          — --apply-phi-correction diagnostic hook (default off)
+[x] M2 로컬 — `data/mock/fermat_ratio_v1.h5` 생성 (1,000 family / 3,000 rows)
+[ ] Kaggle CUDA full training + SBC/unfiltered acceptance
+```
 ```
 
 ### Mock 데이터 브리지
@@ -128,7 +141,7 @@ ML 학습 라벨 = `output(full_numerical) − output(SIE 표준 근사)`.
 |---------|----------|------|-----------|
 | system 6 (Δt=24.14일) | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음, 실관측 포맷 synthetic Δt 오차 0.09일 | 2026-05-22 |
 | ZTF 노이즈 전체 통계 | Phase 1 입력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
-| SDSS J1226-0006 | Mode 1 출력 (H₀) | ⚠️ REAL 경로 연결, 원본 observation HDF5/sidecar 없음 → skip | 2026-05-27 |
+| SDSS J1226-0006 | Mode 1 Δt / H₀ diagnostic | ✅ real benchmark alias 승격, Δt `33.9`일로 reference `33.7±2.7`일 통과. SIE-consistent thin-lens potential 후 H₀는 `58.98`로 diagnostic only | 2026-06-15 |
 | TDC1 Rung 0 | Mode 1 출력 | ⚠️ REAL 경로 연결, 원본 observation HDF5/sidecar 없음 → skip | 2026-05-27 |
 | TDC1 Rung 1 | Mode 1 출력 | ⚠️ MOCK/SKIP — 원본 데이터 없음 | 2026-05-02 |
 | (추가 예정) DM 회복 정확도 | Mode 2 | ⬜ 미실행 | — |
@@ -153,7 +166,18 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
 
 ## 알려진 문제
 
-- 실제 benchmark 원본 데이터(system6, ZTF, SDSS J1226, TDC1 Rung 0/1)가 없어 MOCK/SKIP 검증만 수행됨.
+- 실제 benchmark 원본 데이터 중 SDSS J1226 Euler A/B 광도곡선은
+  `data/observations/sdss_j1226_observed.h5`로 benchmark alias 승격 완료.
+  resolved A/B pairwise fallback으로 `dt_obs_days=33.9`,
+  `confidence_grade=resolved_pairwise`를 회복했고 sidecar reference
+  `33.7±2.7`일 기준 Δt benchmark를 통과했다.
+  H0 reference가 없어 COSMOGRAIL 1σ H0 판정은 보류하고 finite diagnostic으로만 확인한다.
+  SIE thin-lens deflection/Fermat potential 일관성 보정 후에도 `H0_approx=58.98`로 낮게 남아,
+  단순 potential 상속 문제가 아니라 double-lens astrometry, lens-center, 외부수렴 또는 실제 lens model
+  복잡도 쪽이 다음 원인 후보로 남았다.
+  Mode 1 ML 보정은 domain-aware abstention을 도입해 J1226를 `borderline`으로 분류하며,
+  보정 smoke는 실행하되 `benchmark_use=false`와 conservative sigma multiplier를 기록한다.
+  system6, ZTF, TDC1 Rung 0/1은 아직 MOCK/SKIP 검증만 수행됨.
 - `data/mock/mock_dataset.h5`는 Phase 3/4 공백을 메우는 개발용 mock이며 benchmark 통과 근거가 아님.
 - Phase 3 v2.3 mock eval에서 `dt_approx` 노이즈로 perfect-kappa oracle은 무너졌지만,
   `dt_ratio + image residual` 입력 조합이 여전히 매우 강해 model H0 r이 0.999대에 머묾.
@@ -233,19 +257,25 @@ short sanity run은 `--min-epochs-for-acceptance` 기본 10보다 짧으면
   coverage/QQ 진단만 바꾸고 H0 보정값, RMSE, r, leak trigger 입력값은 바꾸지 않는다.
   `pipelines/run_mode1.py --mode1-sigma-scale`도 같은 metadata를 예약한다.
 - Mode 1 ML inference hook을 `pipelines/run_mode1.py --apply-correction`에 연결했다.
-  기존 `data/checkpoints/phase4_v0_2_imgres_best.pt`와
-  `data/target_scaler_phase4_v0_2.pkl`로 synthetic smoke 실행 시
-  `H0_approx=69.9667`, ML 적용 후 `H0=85.7612`, `h0_correction=15.7945`,
-  `sigma_H0_raw=2.3573`, `sigma_H0_scaled=3.4652`, `use_image=false`를 확인했다.
+  현재 기본 pairing은 v0.6 checkpoint(`data/checkpoints/phase4_v0_6_imgres_best.pt`)와
+  v0.4 scaler(`data/target_scaler_phase4_v0_4.pkl`)다. checkpoint/config shape mismatch는
+  compatibility error로 조기 차단한다.
+- J1226 실측 `run_mode1.py --apply-correction` smoke를 통과했다.
+  관측 flux를 valid epoch 기준 표준화해 ML 입력 분포 폭주를 막았고,
+  SIE-consistent thin-lens potential 기준 `dt_obs_days=33.9`, `confidence_grade=resolved_pairwise`,
+  `h0_correction_scaled_raw=0.3504`, `H0_approx=58.9770`, `H0=93.4195`을 확인했다.
+  이 수치는 실행 안정화 확인용이며 COSMOGRAIL 1σ benchmark 판정에는 사용하지 않는다.
 
 ---
 
 ## 다음 작업
 
-1. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/SDSS/TDC1 검증 재실행
-2. v0.7 post-hoc sigma scaling 재평가 실행:
+1. SDSS J1226 H0 diagnostic 원인 분석: lens-center/astrometry perturbation, external convergence,
+   published mass model reference, SIE-only double-lens degeneracy를 분리
+2. 실제 benchmark 데이터 입수 시 Phase 1 system6/ZTF/TDC1 검증 재실행
+3. v0.7 post-hoc sigma scaling 재평가 실행:
    `python scripts/phase4_v0_2_round.py --eval-only --mode1-sigma-scale 1.47 --bootstrap-n 1000`
-3. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
-4. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
-5. Mode 1 ML 보정은 synthetic smoke까지 완료. 다음은 실측/benchmark 입력 확보 후
-   `run_mode1.py --apply-correction --mode1-sigma-scale 1.47` 결과 검증
+4. Phase 4 v1에서 image_size 128 복귀 및 NFW offset 분포 도입 검토
+5. 선택 시 Kaggle CUDA에서 `real_phase3_v2_6.h5` 재현 실행 후 결과 회수
+6. Mode 1 ML 보정은 J1226 실측 smoke까지 완료. 다음은 real-like/OOD set에서
+   calibration 및 image-missing acceptance 기준 정의

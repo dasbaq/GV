@@ -1,0 +1,39 @@
+# SDSS J1226-0006 — Mode 1 observation manifest (A-B double).
+# This is the real-data system on which Bag/Shafieloo et al. (arXiv:2110.15315)
+# — the very method our Phase 1 implements — validated time-delay recovery from
+# the unresolved COSMOGRAIL light curve. Double + flux ratio B/A=0.499 (<1),
+# so the |mu|<1 reconstruction assumption holds (unlike DES0408 A-B).
+#
+# Astrometry source (user-provided table):
+#   Label    dRA(")        dDEC(")        mag         flux ratio
+#   A        0.0           0.0            17.05        1.000
+#   B        1.2563        -0.0550        17.80        0.499
+#   G(lens)  0.4386        0.0209         17.71        -
+# fit_sie_to_images solves beta = theta - alpha(theta) with the lens at the
+# ORIGIN, so positions below are LENS(G)-CENTERED: (dRA-dRA_G, dDEC-dDEC_G).
+
+name: SDSS_J1226-0006
+source: COSMOGRAIL
+
+# Spectroscopic redshifts: lens galaxy G and source quasar.
+z_lens: 0.517
+z_source: 1.123
+
+# G-centered (delta_RA, delta_DEC) [arcsec], order = A, B (matches `series`).
+# Sign convention follows the published table verbatim; revisit dRA sign if the
+# SIE fit residual_rms_arcsec is abnormally large.
+image_positions:
+  - [-0.4386, -0.0209]   # A : (0 - 0.4386, 0 - 0.0209)
+  - [0.8177, -0.0759]    # B : (1.2563 - 0.4386, -0.0550 - 0.0209)
+
+# Optional relative image brightness (flux ratios A:B from the table).
+image_fluxes: [1.000, 0.499]
+
+time_zero_at_first: true
+time_grid_atol_days: 1.0e-8
+
+columns:
+  time: mhjd
+  series:
+    - {name: A, unit: magnitude, mag: mag_A, mag_err: magerr_A}
+    - {name: B, unit: magnitude, mag: mag_B, mag_err: magerr_B}
